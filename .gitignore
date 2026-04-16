@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Env + secrets (never commit real keys)
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+ui/dist/
+ui/.vite/
+
+# User uploads / local data volumes
+uploads/data_sources/*
+!uploads/data_sources/.gitkeep
+qdrant_storage/
+postgres_data/
+redis_data/
+logs/
+
+# OS / editor
+.DS_Store
+*.log
+.idea/
+.vscode/
