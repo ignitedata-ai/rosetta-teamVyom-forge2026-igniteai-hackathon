@@ -29,6 +29,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+from .graph_viz import trace_to_graph
+
 
 def coordinator_to_service_result(
     coord_result: dict,
@@ -60,6 +62,15 @@ def coordinator_to_service_result(
         "cost_usd": float(total_cost_usd),
         # --- Extension fields (optional in AskQuestionResponse) ---
         "trace": coord_result.get("trace"),
+        # Graph-ready payload derived from the trace tree. Returns None when
+        # the trace is absent or too small to be worth rendering (<2 cells),
+        # so the UI naturally skips rendering for trivial answers.
+        "graph_data": trace_to_graph(coord_result.get("trace")),
+        # Analytics chart payload — surfaced directly from the last tool
+        # that returned one (sensitivity tornado / goal-seek convergence /
+        # group-aggregate bar / time-bucket line). None when the question
+        # didn't produce a chartable result.
+        "chart_data": coord_result.get("chart_data"),
         "audit_status": audit_status,
         "evidence_refs": [e.get("ref") for e in coord_result.get("evidence", []) if e.get("ref")],
         "active_entity": coord_result.get("active_entity"),

@@ -32,20 +32,103 @@ def _canon(sheet: str, coord: str) -> str:
     return f"{sheet}!{coord.replace('$', '')}"
 
 
-def _infer_data_type(value: Any) -> str:
+_CURRENCY_SYMBOLS = ("$", "€", "£", "¥", "₹", "[$-")
+
+# Label keywords that strongly imply a percent / rate semantic meaning.
+# Used as a fallback when the cell's number_format is "General" (common in
+# programmatically-generated workbooks where the author never set an explicit
+# percent format).
+_PERCENT_LABEL_HINTS = ("rate", "percent", "ratio", "margin", "%")
+
+# Label keywords that strongly imply a currency semantic meaning. Used only
+# as a fallback when number_format provides no signal and the value magnitude
+# is consistent with money (>= 1).
+_CURRENCY_LABEL_HINTS = (
+    "revenue",
+    "cost",
+    "price",
+    "gross",
+    "profit",
+    "income",
+    "expense",
+    "amount",
+    "total",
+    "budget",
+    "addback",
+    "payroll",
+    "fee",
+    "spend",
+    "pvr",
+    "allowance",
+    "compensation",
+)
+
+
+def _infer_data_type(
+    value: Any,
+    number_format: str | None = None,
+    *,
+    label: str | None = None,
+) -> str:
+    """Infer a semantic data type from the cell's cached value, its Excel
+    number format string, and optionally its semantic label.
+
+    Priority:
+      1. None → empty; bool → bool; datetime-like → date; string → string/error
+      2. Explicit number_format (`%`, currency symbol, date tokens) wins
+      3. Label-based fallback for `percent` / `currency` when format is General
+         (common in programmatically-built fixtures)
+      4. Default → number
+    """
     if value is None:
         return "empty"
     if isinstance(value, bool):
         return "bool"
-    if isinstance(value, (int, float)):
-        return "number"
     if hasattr(value, "isoformat"):
         return "date"
+    if isinstance(value, (int, float)):
+        fmt = (number_format or "").strip()
+        # Explicit format wins
+        if fmt and fmt.lower() != "general":
+            if "%" in fmt:
+                return "percent"
+            if any(sym in fmt for sym in _CURRENCY_SYMBOLS):
+                return "currency"
+            if _looks_like_date_format(fmt):
+                return "date"
+        # Label-based fallbacks
+        if label:
+            low = label.lower()
+            # Percent: small fractional value AND rate-like label
+            if abs(value) <= 1 and value != 0 and any(kw in low for kw in _PERCENT_LABEL_HINTS):
+                return "percent"
+            # Currency: numeric magnitude >= 1 AND money-like label
+            if abs(value) >= 1 and any(kw in low for kw in _CURRENCY_LABEL_HINTS):
+                return "currency"
+        return "number"
     if isinstance(value, str):
         if value.startswith("#"):
             return "error"
         return "string"
     return "other"
+
+
+def _looks_like_date_format(fmt: str) -> bool:
+    """Return True if the number_format contains date/time tokens (y / m / d / h / s)
+    *outside* quoted sections. Excel uses the same 'm' for minutes and months;
+    we err on the side of calling anything with these tokens a date format,
+    which is correct for the Dealer fixture.
+    """
+    in_quotes = False
+    for ch in fmt:
+        if ch == '"':
+            in_quotes = not in_quotes
+            continue
+        if in_quotes:
+            continue
+        if ch in "ymdhs":
+            return True
+    return False
 
 
 def _extract_named_ranges(wb_formulas) -> list[NamedRangeModel]:
@@ -252,13 +335,16 @@ def parse_workbook(path: str | Path, workbook_id: str | None = None) -> Workbook
 
                     label = _semantic_label(ws_f, cell.row, cell.column)
 
+                    # Read number_format from the formula-pass workbook (more reliable
+                    # than the data_only one for format strings).
+                    number_format = getattr(cell, "number_format", None)
                     cm = CellModel(
                         sheet=name,
                         coord=coord,
                         ref=ref,
                         value=vval,
                         formula=formula,
-                        data_type=_infer_data_type(vval),
+                        data_type=_infer_data_type(vval, number_format, label=label),
                         is_hardcoded=not is_formula and vval is not None,
                         semantic_label=label,
                     )
@@ -312,8 +398,11 @@ def parse_workbook(path: str | Path, workbook_id: str | None = None) -> Workbook
             if "!" in d and d.split("!", 1)[0] != cm.sheet:
                 cross_sheet_edges += 1
 
-    # Detect circular refs via simple DFS
+    # Detect circular refs via simple DFS, then enrich each with any
+    # author comment from cells in the chain (authoritative for whether
+    # a cycle is intentional vs accidental).
     circular = _detect_circular(cells)
+    _enrich_circular_with_comments(wb_f, circular)
 
     # Max depth (bounded)
     max_depth = _approx_max_depth(cells)
@@ -324,6 +413,20 @@ def parse_workbook(path: str | Path, workbook_id: str | None = None) -> Workbook
         cross_sheet_edges=cross_sheet_edges,
         circular_references=circular,
     )
+
+    # Parse pivot tables from the raw .xlsx XML and attach to their host sheets.
+    # Failures here are non-fatal — pivots are enrichment, not critical path.
+    try:
+        from .pivot_parser import parse_pivot_tables
+
+        pivots_by_sheet = parse_pivot_tables(path)
+        sheets_by_name = {s.name: s for s in sheets}
+        for sheet_name, pivots in pivots_by_sheet.items():
+            target = sheets_by_name.get(sheet_name)
+            if target is not None:
+                target.pivot_tables = pivots
+    except Exception as e:
+        log.warning("pivot-table parsing failed for %s: %s", path, e)
 
     wb = WorkbookModel(
         workbook_id=wid,
@@ -373,7 +476,11 @@ def _precompute_missing_values(wb: WorkbookModel) -> None:
             v = ev.value_of(c.ref)
             if v is not None:
                 c.value = v
-                c.data_type = _infer_data_type(v)
+                # Re-infer using whatever format was previously stored on the
+                # CellModel; we don't have the openpyxl cell here, so pass
+                # through the existing data_type as a hint via the number_format
+                # sentinel (None → plain value-based inference).
+                c.data_type = _infer_data_type(v, None) if c.data_type in (None, "empty") else c.data_type
 
 
 def _detect_circular(cells: dict[str, CellModel]):
@@ -393,9 +500,15 @@ def _detect_circular(cells: dict[str, CellModel]):
                 idx = stack.index(node)
                 chain = stack[idx:] + [node]
                 if not any(set(chain[:-1]) == set(c.chain[:-1]) for c in cycles):
+                    # Intentional defaults to False here; the comment-enrichment
+                    # pass in parse_workbook promotes it to True (with an
+                    # author_comment) when the workbook author left a note on
+                    # a cell in the cycle.
                     cycles.append(
                         CircularRef(
-                            chain=chain, intentional=True, note="Iterative/circular — often intentional in financial models."
+                            chain=chain,
+                            intentional=False,
+                            note="Circular dependency detected. No author note found — may be intentional (iterative calc) or a bug.",
                         )
                     )
             return
@@ -414,6 +527,81 @@ def _detect_circular(cells: dict[str, CellModel]):
         if color[k] == WHITE:
             dfs(k)
     return cycles
+
+
+# Keywords in an author's cell comment that promote a cycle to `intentional`.
+_INTENTIONAL_COMMENT_KEYWORDS = (
+    "circular",
+    "iterative",
+    "intentional",
+    "by design",
+    "expected",
+)
+
+
+def _enrich_circular_with_comments(wb_f, cycles) -> None:
+    """For each detected cycle, look for evidence that the cycle is intentional:
+
+      Primary:  an openpyxl cell comment on any cell in the chain containing
+                an intent keyword (`circular`, `iterative`, `intentional`,
+                `by design`, `expected`). This is authoritative — comments
+                are explicit author annotations.
+
+      Fallback: Excel's workbook-level iterative-calculation setting
+                (`wb.calculation.iterate == True`). When set, Excel is
+                configured to allow circular references and converge — a
+                strong signal that at least the top-level cycles are
+                intentional. We promote but mark it as inferred, not
+                authored.
+    """
+    if not cycles:
+        return
+    # Primary pass: look for authored comments on cells in each cycle.
+    for cr in cycles:
+        for cell_ref in cr.chain:
+            if "!" not in cell_ref:
+                continue
+            sheet_name, coord = cell_ref.split("!", 1)
+            try:
+                ws = wb_f[sheet_name]
+            except KeyError:
+                continue
+            try:
+                cell = ws[coord]
+            except Exception:
+                continue
+            cmt = getattr(cell, "comment", None)
+            if cmt is None:
+                continue
+            text = (cmt.text or "").strip()
+            if not text:
+                continue
+            low = text.lower()
+            if any(kw in low for kw in _INTENTIONAL_COMMENT_KEYWORDS):
+                cr.intentional = True
+                cr.author_comment = text
+                cr.commented_ref = cell_ref
+                cr.comment_author = getattr(cmt, "author", None)
+                cr.note = f"Marked intentional by the author's comment on {cell_ref}."
+                break  # one confirming comment is enough
+
+    # Fallback: iterative-calc workbook setting. If enabled, Excel is actively
+    # permitting circular refs to converge. Promote any still-ambiguous cycle.
+    iterative_enabled = False
+    try:
+        iterative_enabled = bool(getattr(wb_f.calculation, "iterate", False))
+    except Exception:
+        iterative_enabled = False
+    if iterative_enabled:
+        for cr in cycles:
+            if cr.intentional:
+                continue
+            cr.intentional = True
+            cr.note = (
+                "Iterative calculation is enabled on this workbook, so Excel is "
+                "configured to resolve circular references by repeated evaluation. "
+                "The cycle is treated as intentional (no author comment found)."
+            )
 
 
 def _approx_max_depth(cells: dict[str, CellModel]) -> int:

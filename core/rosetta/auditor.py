@@ -45,6 +45,11 @@ CELL_REF_QUOTED_RE = re.compile(r"'([^']+)'!(\$?[A-Z]{1,3}\$?\d+)")
 # Cell ref with simple unquoted sheet: SheetName!A1 (no spaces)
 CELL_REF_SIMPLE_RE = re.compile(r"(?<![\w!])([A-Za-z_]\w*)!(\$?[A-Z]{1,3}\$?\d+)")
 
+# Range ref (quoted or simple sheet): 'Sheet Name'!A2:B10 or SheetName!A2:B10.
+# Used to credit analytics answers that cite a range rather than a cell.
+RANGE_REF_QUOTED_RE = re.compile(r"'([^']+)'!(\$?[A-Z]{1,3}\$?\d+):(\$?[A-Z]{1,3}\$?\d+)")
+RANGE_REF_SIMPLE_RE = re.compile(r"(?<![\w!])([A-Za-z_]\w*)!(\$?[A-Z]{1,3}\$?\d+):(\$?[A-Z]{1,3}\$?\d+)")
+
 # Coordinate-only pattern (used for prose-embedded multi-word sheet names
 # like `... in P&L Summary!G32`): find each `!CELLREF` and walk backward.
 COORD_RE = re.compile(r"!(\$?[A-Z]{1,3}\$?\d+)\b")
@@ -157,15 +162,38 @@ def _extract_cell_refs(text: str, known_sheets: set[str]) -> list[str]:
     """Return canonical refs present in text.
 
     Strategy — pass once per `!CELLREF` occurrence, preferring longest match:
-      1. Quoted 'Sheet Name'!A1 → direct
+      1. Quoted 'Sheet Name'!A1:B2 range or 'Sheet Name'!A1 cell → direct
       2. Multi-word sheet ending just before `!` matching a known_sheets entry
       3. Simple unquoted single-word `Foo!A1` (fallback — validates against
          known_sheets if provided, else returns as-is)
       4. Anything else → "?UNKNOWN_SHEET!COORD" violation marker
+
+    Range refs (A1:B10) are returned alongside single-cell refs with the full
+    range preserved (e.g. `Sheet!A2:A773`). The verifier treats a range as
+    matched when the sheet is known and both endpoints are valid cells —
+    analytics tools cite whole ranges, so this keeps them audit-clean.
     """
     refs: list[str] = []
     handled_bang_positions: set[int] = set()
     known_sorted = sorted(known_sheets, key=len, reverse=True) if known_sheets else []
+
+    # Range refs first (they are longer and their `!` positions would
+    # otherwise be consumed by the single-cell sweep below).
+    for m in RANGE_REF_QUOTED_RE.finditer(text):
+        sheet = m.group(1)
+        start = m.group(2).replace("$", "")
+        end = m.group(3).replace("$", "")
+        refs.append(f"{sheet}!{start}:{end}")
+        handled_bang_positions.add(m.start() + m.group(0).index("!"))
+    for m in RANGE_REF_SIMPLE_RE.finditer(text):
+        bang_pos = m.start() + m.group(0).index("!")
+        if bang_pos in handled_bang_positions:
+            continue
+        sheet = m.group(1)
+        start = m.group(2).replace("$", "")
+        end = m.group(3).replace("$", "")
+        refs.append(f"{sheet}!{start}:{end}")
+        handled_bang_positions.add(bang_pos)
 
     # 1. Quoted sheet refs
     for m in CELL_REF_QUOTED_RE.finditer(text):
@@ -267,6 +295,48 @@ def _collect_values_from_tools(tool_log: list[ToolCall]) -> tuple[set[float], se
     return nums, refs, cats
 
 
+def _collect_known_identifiers(wb: WorkbookModel) -> set[str]:
+    """Build the set of identifier-like tokens that are legitimate to cite.
+
+    Covers:
+      - sheet names (e.g. 'LCD_sample_csv', 'P&L Summary')
+      - column header labels from every sheet (e.g. 'HourlyWetBulbTemperatureF')
+
+    Named ranges are added separately by the caller so existing callers that
+    only want the named-range universe remain unaffected.
+    """
+    ids: set[str] = set()
+    for s in wb.sheets:
+        if s.name:
+            ids.add(s.name)
+    # Column headers: first non-empty string value on each column within the
+    # first three rows. Kept deterministic so we don't mistake data cells
+    # for headers on sheets with a title banner row.
+    header_by_col: dict[tuple[str, str], str] = {}
+    for ref, cell in wb.cells.items():
+        if not isinstance(cell.value, str):
+            continue
+        if not cell.value.strip():
+            continue
+        # extract row number from coord
+        row_digits = "".join(c for c in cell.coord if c.isdigit())
+        if not row_digits or int(row_digits) > 3:
+            continue
+        col_letters = "".join(c for c in cell.coord if c.isalpha())
+        key = (cell.sheet, col_letters)
+        if key not in header_by_col:
+            header_by_col[key] = cell.value.strip()
+    for label in header_by_col.values():
+        if label:
+            ids.add(label)
+            # Also add whitespace-collapsed and non-word-stripped variants
+            # for cases where Claude might write the header slightly differently.
+            stripped = re.sub(r"\s+", "", label)
+            if stripped and stripped != label:
+                ids.add(stripped)
+    return ids
+
+
 def _collect_workbook_universe(wb: WorkbookModel) -> tuple[set[float], set[str], set[str]]:
     nums: set[float] = set()
     refs: set[str] = set()
@@ -331,6 +401,15 @@ def _ref_matches(target: str, universe: set[str]) -> bool:
     target_clean = target.replace("$", "")
     if target_clean in universe:
         return True
+    # Range refs (`Sheet!A1:B2`) — credit when sheet is known AND both
+    # endpoints parse as valid cell coords. This lets analytics tools cite
+    # ranges without every sub-cell needing to appear in the universe.
+    if ":" in target_clean and "!" in target_clean:
+        sheet, rng = target_clean.split("!", 1)
+        # Sheet must exist in universe (any cell on that sheet present)
+        if any(r.startswith(f"{sheet}!") for r in universe):
+            if re.fullmatch(r"[A-Z]{1,3}\d+:[A-Z]{1,3}\d+", rng):
+                return True
     # Case-insensitive sheet match as fallback
     target_lower = target_clean.lower()
     for v in universe:
@@ -348,6 +427,12 @@ def audit(answer_text: str, tool_log: list[ToolCall], wb: WorkbookModel) -> Audi
 
     tool_nums, tool_refs, seen_categories = _collect_values_from_tools(tool_log)
     wb_nums, wb_refs, nr_names = _collect_workbook_universe(wb)
+    # Identifier universe: named-range names are the classic case, but
+    # analytics answers also legitimately cite sheet names and column
+    # header labels (e.g. "HourlyWetBulbTemperatureF above 50"). Without
+    # these in the universe, the TitleCase / snake_case check below would
+    # flag them as fabricated.
+    known_identifiers = _collect_known_identifiers(wb) | nr_names
 
     # Universes: tool-returned takes precedence, workbook is fallback
     num_universe = tool_nums | wb_nums
@@ -391,10 +476,17 @@ def audit(answer_text: str, tool_log: list[ToolCall], wb: WorkbookModel) -> Audi
     # --- Named ranges ---
     for name in _extract_named_ranges(answer_text, nr_names):
         result.verified_named_ranges.append(name)
-    # Detect identifier-looking words that LOOK like named ranges but aren't known
+    # Detect identifier-looking words that LOOK like named ranges but aren't known.
+    # The known-identifier set covers named ranges, sheet names, and column
+    # header labels across every sheet — analytics answers routinely cite
+    # column headers in prose and they are ground-truth identifiers.
     for m in re.finditer(r"\b([A-Z][A-Za-z0-9_]{3,})\b", answer_text):
         candidate = m.group(1)
-        if candidate in nr_names:
+        if candidate in known_identifiers:
+            continue
+        # Case-insensitive identifier match (column headers often appear in
+        # the answer with different casing than the workbook's header cell).
+        if candidate.lower() in {i.lower() for i in known_identifiers}:
             continue
         # Skip common English words in TitleCase that appear in prose
         if candidate.lower() in {

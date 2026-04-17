@@ -18,12 +18,17 @@ import {
   getUsageSummary,
   listConversations,
   processDataSource,
+  type AnalyticsChartData,
   type Conversation,
   type ConversationListItem,
   type SchemaInfoResponse,
+  type TraceNode,
   type UsageSummaryResponse,
 } from '../api/excelAgent';
 import Layout from '../components/Layout';
+import FormulaBreakdown from '../components/FormulaBreakdown';
+import AnswerMarkdown from '../components/AnswerMarkdown';
+import AnalyticsChart from '../components/AnalyticsChart';
 
 export default function Dashboard() {
   const { isAuthenticated, isLoading, tokens, updateTokens, logout } = useAuth();
@@ -55,6 +60,8 @@ export default function Dashboard() {
     inputTokens?: number | null;
     outputTokens?: number | null;
     costUsd?: number | null;
+    trace?: TraceNode | null;
+    chartData?: AnalyticsChartData | null;
   }>>([]);
   const [askError, setAskError] = useState<string | null>(null);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
@@ -332,6 +339,8 @@ export default function Dashboard() {
           inputTokens: response.input_tokens,
           outputTokens: response.output_tokens,
           costUsd: response.cost_usd,
+          trace: response.trace ?? null,
+          chartData: response.chart_data ?? null,
         },
       ]);
     } catch (error) {
@@ -610,30 +619,28 @@ export default function Dashboard() {
                         >
                           {msg.type === 'assistant' && msg.error ? (
                             <p className="text-red-300">{msg.content}</p>
+                          ) : msg.type === 'assistant' ? (
+                            <AnswerMarkdown content={msg.content} />
                           ) : (
                             <pre className="whitespace-pre-wrap font-sans text-sm">{msg.content}</pre>
                           )}
 
-                          {/* Show code used for assistant messages */}
-                          {msg.type === 'assistant' && msg.codeUsed && !msg.error && (
-                            <details className="mt-3 pt-3 border-t border-white/10">
-                              <summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-300">
-                                View Code ({msg.executionTime}ms)
-                              </summary>
-                              <pre className="mt-2 p-3 bg-[#1a1a2e] rounded-lg text-xs text-gray-300 overflow-x-auto">
-                                {msg.codeUsed}
-                              </pre>
-                            </details>
+                          {/* Progressive formula breakdown — rendered when the
+                              coordinator's backward_trace produced a tree.
+                              Click any row to drill deeper. */}
+                          {msg.type === 'assistant' && !msg.error && msg.trace && (
+                            <FormulaBreakdown trace={msg.trace} />
                           )}
 
-                          {/* Show token usage and cost for assistant messages */}
-                          {msg.type === 'assistant' && (msg.inputTokens || msg.outputTokens || msg.costUsd) && (
-                            <div className="mt-2 pt-2 border-t border-white/10 flex items-center gap-3 text-xs text-gray-500">
-                              {msg.inputTokens != null && <span>In: {msg.inputTokens.toLocaleString()}</span>}
-                              {msg.outputTokens != null && <span>Out: {msg.outputTokens.toLocaleString()}</span>}
-                              {msg.costUsd != null && <span className="text-emerald-500">${msg.costUsd.toFixed(5)}</span>}
-                            </div>
+                          {/* Analytics chart — tornado (sensitivity) /
+                              convergence line (goal-seek) / bar (group /
+                              histogram / top-N) / time-series line. Renders
+                              only when the coordinator's last tool produced
+                              a chart_data payload. */}
+                          {msg.type === 'assistant' && !msg.error && msg.chartData && (
+                            <AnalyticsChart chart={msg.chartData} />
                           )}
+
                         </div>
                       </div>
                     ))}

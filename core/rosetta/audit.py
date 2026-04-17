@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .models import AuditFinding, WorkbookModel
@@ -13,7 +15,21 @@ def _is_date(v: Any) -> bool:
     return hasattr(v, "year") and hasattr(v, "month") and hasattr(v, "day")
 
 
-def audit_workbook(wb: WorkbookModel) -> list[AuditFinding]:
+def audit_workbook(wb: WorkbookModel, source_path: str | Path | None = None) -> list[AuditFinding]:
+    """Run every structural audit detector over the parsed workbook.
+
+    `source_path`, when provided, unlocks detectors that need the raw `.xlsx`
+    file (currently: conditional-formatting extraction, which requires
+    openpyxl to re-open the file since conditional rules aren't mirrored on
+    the in-memory WorkbookModel). Existing callers that don't pass a path
+    still get every other detector.
+
+    Flat-table sheets (0 formulas, ≥20 rows) additionally get data-quality
+    scans — missing-value and IQR-outlier findings — from the analytics
+    subsystem. These surface via list_findings alongside formula-centric
+    findings so the coordinator can answer "anything wrong with this data?"
+    questions on any sheet shape.
+    """
     findings: list[AuditFinding] = []
     findings.extend(_stale_assumptions(wb))
     findings.extend(_hidden_deps(wb))
@@ -21,6 +37,16 @@ def audit_workbook(wb: WorkbookModel) -> list[AuditFinding]:
     findings.extend(_hardcoded_anomalies(wb))
     findings.extend(_circular_references(wb))
     findings.extend(_broken_refs(wb))
+    if source_path:
+        findings.extend(_conditional_formatting_rules(source_path))
+    # Analytics-side findings for flat-table sheets
+    try:
+        from .analytics.data_quality import scan_flat_table
+
+        findings.extend(scan_flat_table(wb))
+    except Exception:
+        # Analytics scan is enrichment — never break the main audit
+        pass
     return findings
 
 
@@ -103,20 +129,95 @@ def _hidden_deps(wb: WorkbookModel) -> list[AuditFinding]:
     return findings
 
 
+# Volatile functions split by fragility severity.
+#   FRAGILE: behaviour is tied to sheet/range names — can silently break.
+#   UNSTABLE: deliberate recalc-on-open functions; usually intentional but
+#   worth flagging so they don't surprise downstream consumers.
+_FRAGILE_VOLATILE = ("INDIRECT", "OFFSET")
+_UNSTABLE_VOLATILE = ("NOW", "TODAY", "RAND", "RANDBETWEEN", "CELL", "INFO")
+
+_VOLATILE_FUNC_RE = re.compile(r"\b([A-Z]+)\s*\(")
+
+
+def _detect_volatile_funcs(formula: str) -> list[str]:
+    if not formula:
+        return []
+    out: list[str] = []
+    for m in _VOLATILE_FUNC_RE.finditer(formula.upper()):
+        fn = m.group(1)
+        if fn in _FRAGILE_VOLATILE or fn in _UNSTABLE_VOLATILE:
+            out.append(fn)
+    return out
+
+
 def _volatile_formulas(wb: WorkbookModel) -> list[AuditFinding]:
+    """Emit a finding per volatile cell. Severity is split:
+      - INDIRECT / OFFSET → warning (sheet-rename fragility, range drift)
+      - NOW / TODAY / RAND / RANDBETWEEN → info (recalc-on-open, usually intentional)
+    """
     out: list[AuditFinding] = []
     for ref, cell in wb.cells.items():
-        if cell.is_volatile:
+        if not cell.is_volatile or not cell.formula:
+            continue
+        funcs = _detect_volatile_funcs(cell.formula)
+        if not funcs:
+            # Parser flagged it volatile but we couldn't find the function in
+            # the raw formula — fall back to a generic info finding.
             out.append(
                 AuditFinding(
                     severity="info",
                     category="volatile",
                     location=ref,
-                    message=f"{ref} uses a volatile function — result may change on recalculation even without input changes. Formula: ={cell.formula}",
+                    message=f"{ref} uses a volatile function. Formula: ={cell.formula}",
+                    confidence=0.8,
+                )
+            )
+            continue
+        fragile = [f for f in funcs if f in _FRAGILE_VOLATILE]
+        unstable = [f for f in funcs if f in _UNSTABLE_VOLATILE]
+        if fragile:
+            primary = fragile[0]
+            note = _fragility_note(primary)
+            out.append(
+                AuditFinding(
+                    severity="warning",
+                    category="volatile",
+                    location=ref,
+                    message=f"{ref} uses {primary} — fragile. {note} Formula: ={cell.formula}",
+                    detail={"functions": funcs, "fragility": note, "primary": primary},
+                    confidence=0.95,
+                )
+            )
+        else:
+            primary = unstable[0]
+            out.append(
+                AuditFinding(
+                    severity="info",
+                    category="volatile",
+                    location=ref,
+                    message=(
+                        f"{ref} uses {primary} — recalculates on every workbook "
+                        f"open. Usually intentional. Formula: ={cell.formula}"
+                    ),
+                    detail={"functions": funcs, "primary": primary},
                     confidence=0.95,
                 )
             )
     return out
+
+
+def _fragility_note(func: str) -> str:
+    if func == "INDIRECT":
+        return (
+            "INDIRECT resolves a reference from a string. If a sheet or named "
+            "range it points to is renamed, the formula returns #REF!."
+        )
+    if func == "OFFSET":
+        return (
+            "OFFSET's range shifts whenever the anchor row/column changes, "
+            "which can cause silent off-by-one errors if rows are inserted."
+        )
+    return "Value can change between recalculations without any input changing."
 
 
 def _hardcoded_anomalies(wb: WorkbookModel) -> list[AuditFinding]:
@@ -196,3 +297,106 @@ def _broken_refs(wb: WorkbookModel) -> list[AuditFinding]:
                 )
             )
     return out
+
+
+def _conditional_formatting_rules(source_path: str | Path) -> list[AuditFinding]:
+    """Extract `cellIs` / `expression` conditional formatting rules.
+
+    Each rule encodes a business rule ("turn red when variance > 10%") that
+    isn't captured anywhere else in the workbook. We emit one finding per
+    rule; the coordinator can surface these when asked about highlighting
+    or about structural audits.
+
+    Skips purely aesthetic rules (color scales, data bars, icon sets).
+    """
+    out: list[AuditFinding] = []
+    try:
+        import openpyxl
+
+        wb_f = openpyxl.load_workbook(source_path, data_only=False)
+    except Exception:
+        return out
+
+    for ws in wb_f.worksheets:
+        try:
+            cf = ws.conditional_formatting
+        except Exception:
+            continue
+        for cf_range, rules in cf._cf_rules.items() if hasattr(cf, "_cf_rules") else []:
+            rng_str = _cf_range_to_str(cf_range)
+            for rule in rules:
+                rtype = getattr(rule, "type", None)
+                if rtype not in ("cellIs", "expression"):
+                    # Skip colorScale / dataBar / iconSet — pure aesthetics
+                    continue
+                op = getattr(rule, "operator", None)
+                formulas = list(getattr(rule, "formula", []) or [])
+                format_hint = _describe_cf_format(rule)
+                message = _describe_cf_rule(rtype, op, formulas, format_hint, ws.title, rng_str)
+                out.append(
+                    AuditFinding(
+                        severity="info",
+                        category="conditional_rule",
+                        location=f"{ws.title}!{rng_str}",
+                        message=message,
+                        detail={
+                            "sheet": ws.title,
+                            "range": rng_str,
+                            "rule_type": rtype,
+                            "operator": op,
+                            "formulas": formulas,
+                            "format": format_hint,
+                        },
+                        confidence=0.9,
+                    )
+                )
+    return out
+
+
+def _cf_range_to_str(cf_range) -> str:
+    """openpyxl's conditional_formatting keys are MultiCellRange objects; str
+    gives a space-separated list of ranges. For display we keep it compact.
+    """
+    try:
+        s = str(cf_range).strip()
+        return s or "?"
+    except Exception:
+        return "?"
+
+
+def _describe_cf_format(rule) -> str:
+    """Best-effort short summary of the rule's visual effect (fill color)."""
+    try:
+        dxf = rule.dxf
+        if dxf is None:
+            return ""
+        fill = getattr(dxf, "fill", None)
+        if fill is not None:
+            fg = getattr(getattr(fill, "fgColor", None), "rgb", None)
+            if fg:
+                return f"fill {fg}"
+        font = getattr(dxf, "font", None)
+        if font is not None:
+            color = getattr(getattr(font, "color", None), "rgb", None)
+            if color:
+                return f"font {color}"
+    except Exception:
+        pass
+    return ""
+
+
+def _describe_cf_rule(
+    rtype: str,
+    op: str | None,
+    formulas: list[str],
+    format_hint: str,
+    sheet: str,
+    rng: str,
+) -> str:
+    fmt_bit = f" → {format_hint}" if format_hint else ""
+    if rtype == "cellIs":
+        f_repr = ", ".join(formulas) or "?"
+        return f"On {sheet}!{rng}: highlight when value {op or '?'} {f_repr}{fmt_bit}."
+    # expression
+    expr = formulas[0] if formulas else "?"
+    return f"On {sheet}!{rng}: highlight when formula `{expr}` is true{fmt_bit}."

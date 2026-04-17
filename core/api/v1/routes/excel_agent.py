@@ -325,6 +325,8 @@ async def ask_question(
             cost_usd=result.get("cost_usd"),
             # Rosetta extensions
             trace=result.get("trace"),
+            graph_data=result.get("graph_data"),
+            chart_data=result.get("chart_data"),
             audit_status=result.get("audit_status"),
             evidence_refs=result.get("evidence_refs"),
             active_entity=result.get("active_entity"),

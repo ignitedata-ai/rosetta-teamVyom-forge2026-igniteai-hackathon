@@ -96,6 +96,8 @@ class AskQuestionResponse(BaseModel):
     cost_usd: float | None = None
     # --- Rosetta coordinator extensions (optional; UI may ignore) ---
     trace: dict | None = None  # backward-trace tree
+    graph_data: dict | None = None  # React-Flow-ready {nodes, edges, focal_ref}
+    chart_data: dict | None = None  # analytics chart payload (tornado / line / bar)
     audit_status: str | None = None  # "passed" | "partial" | "unknown"
     evidence_refs: list[str] | None = None  # cited cell refs
     active_entity: str | None = None  # last referenced cell ref / metric

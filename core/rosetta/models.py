@@ -44,6 +44,26 @@ class RegionModel(BaseModel):
     note: Optional[str] = None
 
 
+class PivotFieldModel(BaseModel):
+    """One field inside a pivot table, classified by axis."""
+
+    name: str
+    axis: Literal["row", "column", "value", "filter"]
+    aggregation: Optional[str] = None  # sum | average | count | ... (for value fields)
+    formula: Optional[str] = None  # set on calculated fields
+
+
+class PivotTableModel(BaseModel):
+    """A pivot table rendered on a sheet, with its source range + field layout."""
+
+    name: str
+    location: str  # canonical "Sheet!A1:F20"
+    source_range: Optional[str] = None  # canonical "SourceSheet!A1:J500"
+    fields: list[PivotFieldModel] = Field(default_factory=list)
+    refresh_on_load: bool = False
+    last_refreshed: Optional[str] = None
+
+
 class SheetModel(BaseModel):
     name: str
     hidden: bool = False
@@ -55,12 +75,20 @@ class SheetModel(BaseModel):
     regions: list[RegionModel] = Field(default_factory=list)
     formula_count: int = 0
     cell_refs: list[CellRef] = Field(default_factory=list)  # only cells with values or formulas
+    pivot_tables: list[PivotTableModel] = Field(default_factory=list)
 
 
 class CircularRef(BaseModel):
     chain: list[CellRef]
     intentional: bool = False
     note: Optional[str] = None
+    # When the author of the workbook left a comment on any cell in the cycle
+    # indicating the cycle is intentional, we capture both the ref that
+    # carries the comment and the comment text. This is treated as ground
+    # truth for `intentional`.
+    author_comment: Optional[str] = None
+    commented_ref: Optional[CellRef] = None
+    comment_author: Optional[str] = None
 
 
 class AuditFinding(BaseModel):

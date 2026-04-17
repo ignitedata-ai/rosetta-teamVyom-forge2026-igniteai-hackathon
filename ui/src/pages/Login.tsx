@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getGoogleAuthUrl } from '../api/auth';
 
-const REDIRECT_URI = 'http://localhost:3000/auth/google/callback';
+const REDIRECT_URI = 'http://localhost:3003/auth/google/callback';
 
 export default function Login() {
   const { isAuthenticated } = useAuth();

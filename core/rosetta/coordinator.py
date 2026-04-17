@@ -77,6 +77,20 @@ CORE RULES — never violate:
 7. Do not fabricate cell refs. If a tool returns no results, do not
    continue as if it had — broaden the search or ask for clarification.
 
+MODE SELECTION (check first):
+- get_workbook_summary returns a `mode` per sheet: `formula` (has formulas),
+  `tabular` (zero formulas, ≥20 rows — a flat data table), or `other`.
+- For a tabular sheet, prefer analytics tools — aggregate_column, filter_rows,
+  group_aggregate, top_n, lookup_row, time_bucket_aggregate, describe,
+  correlate, detect_outliers, sql_query. Do NOT attempt backward_trace /
+  forward_impact — there are no formulas to trace.
+- For a formula sheet, the classical tools (backward_trace / forward_impact /
+  what_if / scenario_recalc) remain primary; analytics tools still work on
+  top of formula-computed values when asked.
+- When a sheet has 0 formulas, honest answers are preferred over trying to
+  force a computational explanation. Say "this is observational data" if
+  asked how it's calculated.
+
 PLANNING GUIDANCE:
 - Unfamiliar workbook? Start with get_workbook_summary to orient yourself.
 - "How is X calculated?" → find_cells(X) → backward_trace(that cell) →
@@ -86,14 +100,68 @@ PLANNING GUIDANCE:
 - "What if X changes?" / scenario questions → scenario_recalc with
   the overrides dict.
 - "Stale / issues / hidden / circular / anomaly" → list_findings.
+- "Why is X circular?" / "Is this cycle intentional?" →
+  list_findings(category='circular') to see the cycles, then
+  explain_circular(chain_index=N) for the full explanation including
+  any author comment or iterative-calc evidence.
+- "What is the F&I for Deal #1047?" / row-level joins across sheets →
+  join_on_key(sheet_a, key_column_a, sheet_b, key_column_b,
+              select_a=..., select_b=..., filter_key='1047').
+- "How does X differ between sheet A and sheet B?" / structural
+  comparison → compare_regions(ref_a, ref_b). Interpret the result:
+  shape_match_pct, functions_only_a / functions_only_b, and
+  named_ranges_only_a / named_ranges_only_b drive the diff narrative.
+- Questions about a pivot table → list_pivot_tables first; then
+  get_pivot_table(sheet, index) for its fields and source.
+- Analytical questions on tabular sheets:
+  - "What is the average / total / min / max / median X?" → aggregate_column.
+  - "How many rows where X > Y?" → aggregate_column(agg='count', where=[...])
+    OR filter_rows + inspect `matched_rows`.
+  - "What's the latitude of Chicago?" / single-row lookup → lookup_row.
+  - "Top 5 / bottom 3 by X" → top_n.
+  - "Average X by Y" / pivot-style → group_aggregate.
+  - "Distinct values of X" → unique_values.
+  - "Distribution of X" / "histogram" → histogram.
+  - "Outliers in X" / "any suspicious values?" → detect_outliers.
+  - "How many missing values?" → count_missing.
+  - "Duplicates in X?" → find_duplicates.
+  - "Trend / monthly / weekly / month-over-month" → time_bucket_aggregate
+    or trend_summary for slope + R².
+  - "Correlation between X and Y" → correlate.
+  - "Summary stats for X" → describe.
+  - Questions needing joins, subqueries, window functions, or complex
+    grouping → sql_query (call sql_schema first to learn table/column names;
+    cast VARCHAR to numeric with `CAST(col AS DOUBLE)` for arithmetic).
+- Analytical what-if: "what's the average X if I exclude Y?" →
+  scenario_filter. Two-scenario comparison → compare_scenarios.
+- Inverse / goal-seek: "what X makes Y equal Z?" / "how much should X be to
+  push Y to Z?" → goal_seek(input_ref=X, target_ref=Y, target_value=Z).
+  Always verify the relationship is monotonic — the tool warns when it
+  isn't. Input can be a named range (e.g. 'FloorPlanRate') or a cell ref.
+- Sensitivity / ranking drivers: "which input matters most?" / "rank
+  assumptions by impact" → sensitivity(target_ref=Y). Omit input_refs to
+  auto-rank every numeric named range. For one-pair point elasticity → elasticity.
 - Comparison questions ("how does A differ from B?") → find_cells for
-  both → backward_trace each → write a diff explanation directly.
+  both → compare_regions on their regions → write a diff explanation.
 - High-level metric questions ("unit count", "total revenue", "average
   margin", "how many sold") → find_cells will route through the semantic
   tier when keyword matches fail. Cell-level chunks return navigable
   refs directly, so prefer find_cells over guessing cell coordinates.
 - Follow-ups referring to "it" / "that" / "what about April" → the
   active entity from prior turns is provided in the context below.
+
+OUTPUT STYLE:
+- Wrap every cell reference in backticks: `P&L Summary!G32`, `Assumptions!B4`.
+- Wrap every formula in backticks: `=G18 - G25 + Assumptions!B15`.
+- Wrap every function name in backticks: `VLOOKUP`, `SUMIFS`, `SUMPRODUCT`.
+- Wrap every named range in backticks: `FloorPlanRate`, `TaxRate`.
+- Wrap every data-type label in backticks: `percent`, `currency`, `date`.
+- When citing a named range, lead with name and resolved value together:
+  `FloorPlanRate` (5.8%), not just "0.058".
+- No bold except for a single leading `**Warning:**` in diagnostic answers.
+- Structure: one concise lead paragraph answering the question, then
+  one trace/evidence paragraph citing specific cells. Keep answers tight.
+- Plain markdown: dashes for lists, no tables unless genuinely comparative.
 
 DELEGATION:
 - You have a virtual tool "delegate_to_formula_explainer" that is NOT in
@@ -168,12 +236,13 @@ async def answer(
 
     tool_calls_made = 0
     trace_for_ui: Optional[dict] = None
+    chart_for_ui: Optional[dict] = None
     violation_retries_used = 0
     final_text = ""
     final_response = None
 
     while True:
-        attempt_text, attempt_tool_calls, attempt_trace = await _run_tool_loop(
+        attempt_text, attempt_tool_calls, attempt_trace, attempt_chart = await _run_tool_loop(
             client,
             model,
             claude_messages,
@@ -185,6 +254,8 @@ async def answer(
         tool_calls_made += attempt_tool_calls
         if attempt_trace and not trace_for_ui:
             trace_for_ui = attempt_trace
+        if attempt_chart and not chart_for_ui:
+            chart_for_ui = attempt_chart
 
         # Splice in FormulaExplainer if the coordinator requested delegation
         attempt_text, explainer_invoked = _maybe_delegate_to_explainer(attempt_text, wb, message)
@@ -255,6 +326,7 @@ async def answer(
         "session_id": state.session_id,
         "answer": final_text,
         "trace": trace_for_ui,
+        "chart_data": chart_for_ui,
         "evidence": [{"ref": r} for r in evidence_refs],
         "escalated": bool(trace_for_ui),
         "audit_status": audit_status,
@@ -327,16 +399,17 @@ async def _run_tool_loop(
     *,
     user_id: str | None = None,
     data_source_id: str | None = None,
-) -> tuple[str, int, Optional[dict]]:
+) -> tuple[str, int, Optional[dict], Optional[dict]]:
     """Run Claude tool-calling until end_turn.
 
     Accumulates token usage into `state.turn_input_tokens/turn_output_tokens`
     for cost tracking by the caller.
 
-    Returns (text, num_tool_calls, trace_seen).
+    Returns (text, num_tool_calls, trace_seen, chart_seen).
     """
     tool_calls_made = 0
     trace_seen: Optional[dict] = None
+    chart_seen: Optional[dict] = None
 
     for _ in range(MAX_TOOL_TURNS):
         resp = await client.messages.create(
@@ -372,6 +445,11 @@ async def _run_tool_loop(
                 if block.name == "backward_trace" and isinstance(out, dict) and "trace" in out:
                     if trace_seen is None:
                         trace_seen = out["trace"]
+                # Analytics tools return chart_data in the envelope; capture
+                # the last non-null one so the UI renders the most relevant
+                # chart for the user's question.
+                if isinstance(out, dict) and out.get("chart_data"):
+                    chart_seen = out["chart_data"]
                 serialized = json.dumps(out, default=str)[:12000]
                 tool_results.append(
                     {
@@ -384,9 +462,9 @@ async def _run_tool_loop(
             continue
         # end_turn / max_tokens / stop_sequence
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
-        return text, tool_calls_made, trace_seen
+        return text, tool_calls_made, trace_seen, chart_seen
 
-    return "(Coordinator hit max tool turns without producing an answer.)", tool_calls_made, trace_seen
+    return "(Coordinator hit max tool turns without producing an answer.)", tool_calls_made, trace_seen, chart_seen
 
 
 def _maybe_delegate_to_explainer(text: str, wb: WorkbookModel, original_question: str) -> tuple[str, bool]:
