@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { exchangeGoogleCode } from '../api/auth';
 
-const REDIRECT_URI = 'http://localhost:3000/auth/google/callback';
+const REDIRECT_URI = 'http://localhost:3003/auth/google/callback';
 
 export default function GoogleCallback() {
   const [searchParams] = useSearchParams();

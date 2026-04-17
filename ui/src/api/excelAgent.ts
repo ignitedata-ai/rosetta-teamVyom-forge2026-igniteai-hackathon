@@ -47,6 +47,70 @@ export interface SchemaInfoResponse {
   has_data_quality_notes: boolean;
 }
 
+export interface DependencyGraphNodeData {
+  ref: string;
+  sheet: string;
+  coord: string;
+  label: string | null;
+  value: string | null;
+  formula: string | null;
+  is_hardcoded: boolean;
+  is_volatile: boolean;
+  named_range: string | null;
+  is_focal: boolean;
+  is_range: boolean;
+}
+
+export interface DependencyGraphNode {
+  id: string;
+  data: DependencyGraphNodeData;
+}
+
+export interface DependencyGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface DependencyGraphData {
+  nodes: DependencyGraphNode[];
+  edges: DependencyGraphEdge[];
+  focal_ref: string;
+  node_count: number;
+  edge_count: number;
+}
+
+/** Envelope for chart payloads returned by analytics tools
+ * (tornado / line / bar). Emitted by aggregators.group_aggregate,
+ * aggregators.histogram, aggregators.top_n, time_series.*, sensitivity,
+ * and goal_seek. The UI's AnalyticsChart component dispatches on `type`. */
+export interface AnalyticsChartData {
+  type: 'bar' | 'line' | 'tornado' | string;
+  x?: (string | number)[];
+  y?: number[];
+  labels?: string[];
+  high?: number[];
+  low?: number[];
+  baseline?: number;
+  target_line?: number | null;
+  x_label?: string;
+  y_label?: string;
+}
+
+/** Backward-trace tree node — exactly mirrors core.rosetta.models.TraceNode. */
+export interface TraceNode {
+  ref: string;
+  label?: string | null;
+  value?: string | number | boolean | null;
+  formula?: string | null;
+  depth: number;
+  is_hardcoded?: boolean;
+  is_volatile?: boolean;
+  named_range?: string | null;
+  warnings?: string[];
+  children?: TraceNode[];
+}
+
 export interface AskQuestionResponse {
   success: boolean;
   answer: unknown;
@@ -59,6 +123,12 @@ export interface AskQuestionResponse {
   input_tokens: number | null;
   output_tokens: number | null;
   cost_usd: number | null;
+  // Rosetta extensions
+  trace?: TraceNode | null;
+  graph_data?: DependencyGraphData | null;
+  chart_data?: AnalyticsChartData | null;
+  audit_status?: string | null;
+  evidence_refs?: string[] | null;
 }
 
 export interface SuggestedQuestionsResponse {

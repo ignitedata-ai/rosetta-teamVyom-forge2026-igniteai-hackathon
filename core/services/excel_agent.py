@@ -345,7 +345,9 @@ class ExcelAgentService:
             # Parse the workbook structurally (fast, stateless). Attach audit
             # findings so the auditor can validate qualitative claims.
             wb = parse_workbook(data_source.stored_file_path)
-            wb.findings = rosetta_audit_workbook(wb)
+            # Pass the source path so the audit can extract conditional-formatting
+            # rules (they require re-opening the .xlsx with openpyxl).
+            wb.findings = rosetta_audit_workbook(wb, data_source.stored_file_path)
 
             # Hydrate conversation state from Postgres (prior messages, active
             # entity, scenario overrides). We need the full message list so
@@ -457,6 +459,8 @@ class ExcelAgentService:
                 "cost_usd": float(total_cost),
                 # Rosetta extensions — surfaced via the extended response model
                 "trace": adapted["trace"],
+                "graph_data": adapted.get("graph_data"),
+                "chart_data": adapted.get("chart_data"),
                 "audit_status": adapted["audit_status"],
                 "evidence_refs": adapted["evidence_refs"],
                 "active_entity": adapted["active_entity"],
