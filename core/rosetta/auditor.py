@@ -292,6 +292,15 @@ TOLERANCE_ABSOLUTE = 0.5  # fallback for small numbers / rounded display
 
 
 def _number_matches(target: float, universe: Iterable[float]) -> bool:
+    """Match a target number against the universe with tolerance.
+
+    Sign-insensitive: financial prose commonly renders negatives as
+    magnitudes ("a loss of $93,849.78" rather than "-$93,849.78"). The
+    auditor's job is to confirm the magnitude was witnessed; sign can be
+    conveyed by the surrounding prose. Different-magnitude fabrications
+    (e.g. claiming $9,384,978 when truth is $93,849) still fail.
+    """
+    abs_target = abs(target)
     for v in universe:
         if target == v:
             return True
@@ -299,12 +308,21 @@ def _number_matches(target: float, universe: Iterable[float]) -> bool:
             if abs(target) < TOLERANCE_ABSOLUTE:
                 return True
             continue
-        if abs(target - v) / abs(v) <= TOLERANCE_RELATIVE:
+        abs_v = abs(v)
+        # Direct (signed) checks
+        if abs(target - v) / abs_v <= TOLERANCE_RELATIVE:
             return True
         if abs(target - v) <= TOLERANCE_ABSOLUTE:
             return True
-        # Also allow rounded display ($487,500 when actual is $487,532)
+        # Allow rounded display ($487,500 when actual is $487,532)
         if abs(target - round(v, -3)) <= 500:
+            return True
+        # Sign-insensitive checks (prose may carry the sign as "loss"/"deficit")
+        if abs(abs_target - abs_v) / abs_v <= TOLERANCE_RELATIVE:
+            return True
+        if abs(abs_target - abs_v) <= TOLERANCE_ABSOLUTE:
+            return True
+        if abs(abs_target - round(abs_v, -3)) <= 500:
             return True
     return False
 

@@ -88,6 +88,10 @@ PLANNING GUIDANCE:
 - "Stale / issues / hidden / circular / anomaly" → list_findings.
 - Comparison questions ("how does A differ from B?") → find_cells for
   both → backward_trace each → write a diff explanation directly.
+- High-level metric questions ("unit count", "total revenue", "average
+  margin", "how many sold") → find_cells will route through the semantic
+  tier when keyword matches fail. Cell-level chunks return navigable
+  refs directly, so prefer find_cells over guessing cell coordinates.
 - Follow-ups referring to "it" / "that" / "what about April" → the
   active entity from prior turns is provided in the context below.
 

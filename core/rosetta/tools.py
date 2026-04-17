@@ -6,11 +6,57 @@ calls these tools to ground its answer — it never invents formulas or refs.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .evaluator import Evaluator
 from .graph import backward_trace, forward_impacted, forward_impacted_for_named_range
-from .models import WorkbookModel
+from .models import CellModel, TraceNode, WorkbookModel
+
+_COORD_RE = re.compile(r"^([A-Z]+)(\d+)$")
+
+
+def _coord_to_rc(coord: str) -> tuple[int, int] | None:
+    """Convert e.g. 'B12' → (12, 2). Returns None for malformed coords."""
+    m = _COORD_RE.match(coord)
+    if not m:
+        return None
+    letters, row = m.group(1), int(m.group(2))
+    col = 0
+    for ch in letters:
+        col = col * 26 + (ord(ch) - ord("A") + 1)
+    return row, col
+
+
+def _resolved_value(cell: CellModel, ev: Evaluator | None) -> Any:
+    """Return the cell's cached value, or compute it via the evaluator if the
+    cached value is missing.
+
+    Many workbooks (especially ones generated programmatically and never
+    opened in Excel) have no cached values stored — every formula cell reads
+    as None via openpyxl's data_only mode. Without this helper the LLM would
+    either omit numbers (degraded answers) or invent them (auditor blocks).
+    """
+    v = cell.value
+    if v is not None or not cell.formula or ev is None:
+        return v
+    try:
+        return ev.value_of(cell.ref)
+    except Exception:
+        return None
+
+
+def _fill_trace_values(node: TraceNode, ev: Evaluator) -> None:
+    """Recursively populate `value` on TraceNode-s where the cached value is
+    None but a formula exists. Reuses one Evaluator so memoization amortizes
+    the cost across the whole tree."""
+    if node.value is None and node.formula and node.ref:
+        try:
+            node.value = ev.value_of(node.ref)
+        except Exception:
+            pass
+    for child in node.children:
+        _fill_trace_values(child, ev)
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -214,18 +260,24 @@ def _list_sheets(wb: WorkbookModel) -> dict:
 
 
 def _list_named_ranges(wb: WorkbookModel) -> dict:
-    return {
-        "named_ranges": [
+    ev = Evaluator(wb)
+    out = []
+    for nr in wb.named_ranges:
+        cv = nr.current_value
+        if cv is None and len(nr.resolved_refs) == 1 and ":" not in nr.resolved_refs[0]:
+            cell = wb.cells.get(nr.resolved_refs[0])
+            if cell:
+                cv = _resolved_value(cell, ev)
+        out.append(
             {
                 "name": nr.name,
                 "scope": nr.scope,
                 "resolves_to": nr.resolved_refs,
-                "current_value": nr.current_value,
+                "current_value": cv,
                 "is_dynamic": nr.is_dynamic,
             }
-            for nr in wb.named_ranges
-        ]
-    }
+        )
+    return {"named_ranges": out}
 
 
 def _get_cell(wb: WorkbookModel, ref: str) -> dict:
@@ -233,11 +285,12 @@ def _get_cell(wb: WorkbookModel, ref: str) -> dict:
     cell = wb.cells.get(ref)
     if not cell:
         return {"error": f"cell not found: {ref}"}
+    ev = Evaluator(wb)
     return {
         "ref": cell.ref,
         "sheet": cell.sheet,
         "coord": cell.coord,
-        "value": cell.value,
+        "value": _resolved_value(cell, ev),
         "formula": cell.formula,
         "formula_type": cell.formula_type,
         "semantic_label": cell.semantic_label,
@@ -273,6 +326,10 @@ async def _find_cells(
     results: list[dict] = []
     tier_used: str = tier
 
+    # One evaluator shared across exact + keyword paths so memoization
+    # amortizes the cost of resolving cached-None formula cells.
+    ev = Evaluator(wb)
+
     def _run_exact() -> list[dict]:
         out: list[dict] = []
         q = keyword.strip().replace("$", "")
@@ -283,7 +340,7 @@ async def _find_cells(
                 {
                     "ref": cell.ref,
                     "label": cell.semantic_label,
-                    "value": cell.value,
+                    "value": _resolved_value(cell, ev),
                     "has_formula": cell.formula is not None,
                     "formula": cell.formula,
                     "score": 1.0,
@@ -303,7 +360,7 @@ async def _find_cells(
                         {
                             "ref": cell.ref,
                             "label": cell.semantic_label,
-                            "value": cell.value,
+                            "value": _resolved_value(cell, ev),
                             "has_formula": cell.formula is not None,
                             "formula": cell.formula,
                             "score": 1.0,
@@ -330,7 +387,7 @@ async def _find_cells(
                     {
                         "ref": ref,
                         "label": cell.semantic_label,
-                        "value": cell.value,
+                        "value": _resolved_value(cell, ev),
                         "has_formula": cell.formula is not None,
                         "formula": cell.formula,
                         "score": score,
@@ -372,26 +429,46 @@ async def _find_cells(
 
             logging.getLogger("core.rosetta.tools").warning("semantic tier failed: %s", e)
             return []
-        # Map his SearchResult hits (indexed by chunk, not by cell) into our
-        # cell-centric shape. His payload metadata may or may not contain
-        # cell refs — his chunks are sheet/column/formula summaries. We
-        # surface them as "contextual hints" so the coordinator can pick
-        # a ref via get_cell / backward_trace follow-up.
+        # Two chunk granularities live in Qdrant:
+        #   - "cell" chunks: one per labeled cell, payload has `cell_ref`,
+        #     `cell_label`, `section_header`. Map directly to our cell shape
+        #     and (when the ref exists in this workbook) populate the live
+        #     value so the coordinator can cite it without a follow-up call.
+        #   - column/statistics chunks: descriptive only. Surface as context
+        #     so Claude can reason about which sheet to inspect next.
+        ev = Evaluator(wb)
         out: list[dict] = []
         for h in hits:
-            out.append(
-                {
-                    "ref": None,  # his chunks aren't cell-addressed
-                    "label": h.metadata.get("chunk_type") or h.metadata.get("sheet_name"),
-                    "value": None,
-                    "has_formula": None,
-                    "formula": None,
-                    "score": h.score,
-                    "tier_used": "semantic",
-                    "context": h.content[:400] if h.content else None,
-                    "chunk_metadata": h.metadata,
-                }
-            )
+            md = h.metadata or {}
+            ref = md.get("cell_ref")
+            if ref and ref in wb.cells:
+                cell = wb.cells[ref]
+                out.append(
+                    {
+                        "ref": ref,
+                        "label": md.get("cell_label") or cell.semantic_label,
+                        "value": _resolved_value(cell, ev),
+                        "has_formula": cell.formula is not None,
+                        "formula": cell.formula,
+                        "score": h.score,
+                        "tier_used": "semantic",
+                        "section": md.get("section_header"),
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "ref": None,
+                        "label": md.get("chunk_type") or md.get("sheet_name"),
+                        "value": None,
+                        "has_formula": None,
+                        "formula": None,
+                        "score": h.score,
+                        "tier_used": "semantic",
+                        "context": h.content[:400] if h.content else None,
+                        "chunk_metadata": md,
+                    }
+                )
         return out
 
     if tier == "exact":
@@ -420,6 +497,8 @@ def _backward_trace(wb: WorkbookModel, ref: str, max_depth: int) -> dict:
     if ref not in wb.cells:
         return {"error": f"cell not found: {ref}"}
     trace = backward_trace(wb, ref, max_depth=max_depth)
+    # Fill in computed values for nodes whose cached value is None.
+    _fill_trace_values(trace, Evaluator(wb))
     return {"trace": trace.model_dump()}
 
 
@@ -451,11 +530,16 @@ def _resolve_named_range(wb: WorkbookModel, name: str) -> dict:
     nr = next((n for n in wb.named_ranges if n.name.lower() == name.lower()), None)
     if not nr:
         return {"error": f"named range not found: {name}"}
+    cv = nr.current_value
+    if cv is None and len(nr.resolved_refs) == 1 and ":" not in nr.resolved_refs[0]:
+        cell = wb.cells.get(nr.resolved_refs[0])
+        if cell:
+            cv = _resolved_value(cell, Evaluator(wb))
     return {
         "name": nr.name,
         "scope": nr.scope,
         "resolves_to": nr.resolved_refs,
-        "current_value": nr.current_value,
+        "current_value": cv,
         "is_dynamic": nr.is_dynamic,
         "raw": nr.raw_value,
     }
@@ -495,7 +579,10 @@ def _what_if(wb: WorkbookModel, target: str, new_value: float, max_results: int)
             nr_name = nr.name
     if not target_ref:
         return {"error": f"could not resolve target '{target}' to a scalar cell or named range"}
-    old_val = wb.cells[target_ref].value
+    # Baseline evaluator (no overrides) for computing "old" values of formula
+    # cells whose cached value is None.
+    ev_base = Evaluator(wb)
+    old_val = _resolved_value(wb.cells[target_ref], ev_base)
     ev = Evaluator(wb, overrides={target_ref: new_value})
     if nr_name:
         impacted = [r for r, _ in forward_impacted_for_named_range(wb, nr_name)]
@@ -507,18 +594,19 @@ def _what_if(wb: WorkbookModel, target: str, new_value: float, max_results: int)
         if not cell:
             continue
         new_v = ev.value_of(r)
-        if new_v != cell.value:
+        old_v = _resolved_value(cell, ev_base)
+        if new_v != old_v:
             delta = None
             try:
-                if isinstance(new_v, (int, float)) and isinstance(cell.value, (int, float)):
-                    delta = new_v - cell.value
+                if isinstance(new_v, (int, float)) and isinstance(old_v, (int, float)):
+                    delta = new_v - old_v
             except Exception:
                 pass
             changes.append(
                 {
                     "ref": r,
                     "label": cell.semantic_label,
-                    "old": cell.value,
+                    "old": old_v,
                     "new": new_v,
                     "delta": delta,
                 }
@@ -561,6 +649,7 @@ def _get_workbook_summary(wb: WorkbookModel) -> dict:
     }
 
 
+
 def _scenario_recalc(wb: WorkbookModel, overrides: dict[str, Any], target_refs: list[str] | None) -> dict:
     """Recompute target_refs (or all impacted) with multi-override scenario.
 
@@ -585,6 +674,7 @@ def _scenario_recalc(wb: WorkbookModel, overrides: dict[str, Any], target_refs: 
         return {"error": "No overrides could be resolved to cells", "unresolved": unresolved}
 
     ev = Evaluator(wb, overrides=resolved)
+    ev_base = Evaluator(wb)  # baseline, no overrides — for "old" value of formula cells
 
     # Determine targets
     if target_refs:
@@ -604,10 +694,11 @@ def _scenario_recalc(wb: WorkbookModel, overrides: dict[str, Any], target_refs: 
         if not cell:
             continue
         new_v = ev.value_of(r)
-        if new_v != cell.value:
+        old_v = _resolved_value(cell, ev_base)
+        if new_v != old_v:
             recalculated[r] = {
                 "label": cell.semantic_label,
-                "old": cell.value,
+                "old": old_v,
                 "new": new_v,
             }
         else:
