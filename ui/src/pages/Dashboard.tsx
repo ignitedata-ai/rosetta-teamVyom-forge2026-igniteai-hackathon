@@ -26,7 +26,7 @@ import {
   type UsageSummaryResponse,
 } from '../api/excelAgent';
 import Layout from '../components/Layout';
-import FormulaBreakdown from '../components/FormulaBreakdown';
+import FormulaModal from '../components/FormulaModal';
 import AnswerMarkdown from '../components/AnswerMarkdown';
 import AnalyticsChart from '../components/AnalyticsChart';
 
@@ -65,6 +65,10 @@ export default function Dashboard() {
   }>>([]);
   const [askError, setAskError] = useState<string | null>(null);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  // Index of the chat message whose formula is currently open in the modal.
+  // `null` means no modal open. Tracks a single modal at a time — matches
+  // the UX pattern of opening one visualisation, reviewing it, closing.
+  const [formulaModalIdx, setFormulaModalIdx] = useState<number | null>(null);
 
   // Conversations state
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
@@ -625,11 +629,32 @@ export default function Dashboard() {
                             <pre className="whitespace-pre-wrap font-sans text-sm">{msg.content}</pre>
                           )}
 
-                          {/* Progressive formula breakdown — rendered when the
-                              coordinator's backward_trace produced a tree.
-                              Click any row to drill deeper. */}
+                          {/* Button to open the formula-visualisation modal.
+                              Only rendered when the coordinator's answer
+                              carries a backward_trace payload. Inside the
+                              modal the user can toggle between sunburst and
+                              tree; the equation chips sit below. */}
                           {msg.type === 'assistant' && !msg.error && msg.trace && (
-                            <FormulaBreakdown trace={msg.trace} />
+                            <button
+                              type="button"
+                              onClick={() => setFormulaModalIdx(idx)}
+                              className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-indigo-200 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 transition"
+                            >
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <circle cx="12" cy="12" r="9" />
+                                <path d="M12 3v9l7 4" />
+                              </svg>
+                              Visualise formula
+                            </button>
                           )}
 
                           {/* Analytics chart — tornado (sensitivity) /
@@ -991,9 +1016,23 @@ export default function Dashboard() {
     }
   };
 
+  // The formula-visualisation modal lives at the Dashboard root (rather
+  // than inline in each message) because only one can be open at a time
+  // and we want a single React portal instance owning body scroll lock
+  // and backdrop.
+  const modalTrace =
+    formulaModalIdx != null ? chatHistory[formulaModalIdx]?.trace ?? null : null;
+
   return (
     <Layout activeNavItem={section} onNavItemClick={handleNavClick}>
       {renderContent()}
+      {modalTrace && (
+        <FormulaModal
+          trace={modalTrace}
+          open={formulaModalIdx != null}
+          onClose={() => setFormulaModalIdx(null)}
+        />
+      )}
     </Layout>
   );
 }
