@@ -112,6 +112,50 @@ export interface TraceNode {
   children?: TraceNode[];
 }
 
+// --- v1.6 reasoning-trace payload ----------------------------------------
+// Mirrors core.rosetta.reasoning.ReasoningTrace exactly.
+
+/** One paragraph in the "How it works" tab. */
+export interface NarrativeStep {
+  title: string;
+  body: string;
+}
+
+/** Per-stage pipeline state for the stepper. */
+export interface ReasoningStageState {
+  id: 'understand' | 'locate' | 'compute' | 'simulate' | 'verify';
+  symbol: string;
+  label: string;
+  role: string;
+  status: 'ok' | 'skipped' | 'failed';
+  tool_count: number;
+  total_ms: number;
+}
+
+/** Compact tool-call summary (one line per invocation). */
+export interface ReasoningToolCall {
+  stage: string;
+  tool_name: string;
+  args_preview: string;
+  result_preview: string;
+  latency_ms: number;
+}
+
+/** Complete defensibility payload shown in the reasoning modal. */
+export interface ReasoningTrace {
+  intent: string;
+  active_entity: string | null;
+  inherited_entity: boolean;
+  stages: ReasoningStageState[];
+  tool_calls: ReasoningToolCall[];
+  verdict: string;
+  verdict_tone: 'emerald' | 'amber' | 'red' | string;
+  latency_ms: number;
+  cells_referenced: number;
+  steps: number;
+  narrative: NarrativeStep[];
+}
+
 export interface AskQuestionResponse {
   success: boolean;
   answer: unknown;
@@ -130,6 +174,10 @@ export interface AskQuestionResponse {
   chart_data?: AnalyticsChartData | null;
   audit_status?: string | null;
   evidence_refs?: string[] | null;
+  // v1.6 defensibility — short/detailed split + reasoning trace
+  short_answer?: string | null;
+  detailed_answer?: string | null;
+  reasoning_trace?: ReasoningTrace | null;
 }
 
 export interface SuggestedQuestionsResponse {

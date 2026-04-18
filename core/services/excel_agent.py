@@ -465,6 +465,10 @@ class ExcelAgentService:
                 "evidence_refs": adapted["evidence_refs"],
                 "active_entity": adapted["active_entity"],
                 "scenario_overrides": adapted["scenario_overrides"],
+                # v1.6 defensibility — short/detailed split + reasoning trace
+                "short_answer": adapted.get("short_answer"),
+                "detailed_answer": adapted.get("detailed_answer"),
+                "reasoning_trace": adapted.get("reasoning_trace"),
             }
 
         except Exception as e:

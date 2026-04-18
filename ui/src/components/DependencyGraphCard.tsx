@@ -36,7 +36,15 @@ function sheetColor(sheet: string, sheetOrder: string[]) {
 }
 
 // --- Custom node component ---
-function CellNode({ data }: NodeProps<Node<DependencyGraphNodeData & { palette: typeof SHEET_PALETTE[0] }>>) {
+// @xyflow/react's `Node<T>` generic requires `T extends Record<string, unknown>`.
+// Our domain type is a structured interface, so we intersect it with a string-
+// indexed record at the type boundary. This is purely a typing concession to
+// xyflow — the runtime shape is unchanged.
+type CellNodeData = DependencyGraphNodeData & {
+  palette: typeof SHEET_PALETTE[0];
+} & Record<string, unknown>;
+
+function CellNode({ data }: NodeProps<Node<CellNodeData>>) {
   const palette = data.palette;
   const focalRing = data.is_focal ? 'ring-2 ring-[#5b21b6] ring-offset-1 ring-offset-white' : '';
   return (
@@ -133,7 +141,11 @@ export default function DependencyGraphCard({ graph }: Props) {
   }, [graph, sheetOrder]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
-    const data = node.data as DependencyGraphNodeData;
+    // Two-step cast: xyflow types `node.data` as Record<string, unknown>,
+    // which doesn't sufficiently overlap our structured type, so the TS
+    // compiler (correctly) refuses a direct cast. Narrow through `unknown`
+    // first — we own the shape at construction time (see rawNodes above).
+    const data = node.data as unknown as DependencyGraphNodeData;
     console.log('Cell:', data.ref, data);
   }, []);
 

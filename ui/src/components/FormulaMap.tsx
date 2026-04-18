@@ -242,8 +242,11 @@ function renderNode({ nodeDatum, toggleNode, hierarchyPointNode }: CustomNodeEle
         style={{ pointerEvents: 'none' }}
       >
         <div
-          // eslint-disable-next-line react/no-unknown-property
-          xmlns="http://www.w3.org/1999/xhtml"
+          // `xmlns` is a valid attribute on HTML content inside an SVG
+          // <foreignObject> but not part of React's HTMLDivElement types.
+          // Spread-cast keeps the runtime attribute without widening the
+          // div props type.
+          {...({ xmlns: 'http://www.w3.org/1999/xhtml' } as Record<string, string>)}
           style={{
             width: '100%',
             height: '100%',
@@ -334,8 +337,10 @@ function renderNode({ nodeDatum, toggleNode, hierarchyPointNode }: CustomNodeEle
           <rect x={-12} y={-10} rx={9} ry={9} width={32} height={18} fill={palette.stroke} />
           <foreignObject x={-12} y={-10} width={32} height={18} style={{ pointerEvents: 'none' }}>
             <div
-              // eslint-disable-next-line react/no-unknown-property
-              xmlns="http://www.w3.org/1999/xhtml"
+              // See note above — xmlns on HTML inside <foreignObject> is
+              // a valid runtime attribute, passed via spread-cast so the
+              // TS HTMLDivElement type isn't polluted.
+              {...({ xmlns: 'http://www.w3.org/1999/xhtml' } as Record<string, string>)}
               style={{
                 width: '100%',
                 height: '100%',

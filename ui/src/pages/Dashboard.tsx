@@ -16,22 +16,36 @@ import {
   getExcelSchema,
   getSchemaInfo,
   getSuggestedQuestions,
-  getUsageSummary,
   listConversations,
   processDataSource,
   type AnalyticsChartData,
+  type AskQuestionResponse,
   type Conversation,
   type ConversationListItem,
   type ExcelSchemaResponse,
+  type ReasoningTrace,
   type SchemaInfoResponse,
   type TraceNode,
-  type UsageSummaryResponse,
 } from '../api/excelAgent';
 import Layout from '../components/Layout';
 import FormulaModal from '../components/FormulaModal';
-import AnswerMarkdown from '../components/AnswerMarkdown';
 import AnalyticsChart from '../components/AnalyticsChart';
 import SchemaInspector from '../components/SchemaInspector';
+import ReasoningModal from '../components/ReasoningModal';
+import ReasoningTheater from '../components/ReasoningTheater';
+
+/**
+ * Derive a one-line headline from a verbose answer when the backend didn't
+ * emit a short form (cached legacy responses, reloaded conversations). First
+ * sentence or first line, capped at 180 chars. Pure — safe to call anywhere.
+ */
+function deriveHeadline(text: string): string {
+  if (!text) return '';
+  const clean = text.replace(/^[#>\-*\s]+/, '').trim();
+  const m = clean.match(/^(.+?[.!?])(\s|$)/);
+  const first = m ? m[1] : clean.split('\n', 1)[0];
+  return first.length > 180 ? first.slice(0, 179).trimEnd() + '…' : first;
+}
 
 export default function Dashboard() {
   const { isAuthenticated, isLoading, tokens, updateTokens, logout } = useAuth();
@@ -61,6 +75,10 @@ export default function Dashboard() {
   const [chatHistory, setChatHistory] = useState<Array<{
     type: 'user' | 'assistant';
     content: string;
+    // `content` is what's rendered inline. For assistants, this is the
+    // short one-line headline; the full detailed body lives in
+    // `detailedContent` and is surfaced via the ReasoningModal.
+    detailedContent?: string | null;
     codeUsed?: string | null;
     executionTime?: number;
     error?: string | null;
@@ -69,6 +87,14 @@ export default function Dashboard() {
     costUsd?: number | null;
     trace?: TraceNode | null;
     chartData?: AnalyticsChartData | null;
+    reasoningTrace?: ReasoningTrace | null;
+    // The question the user asked that produced this answer — needed
+    // for the reasoning modal header. Populated on assistant rows.
+    question?: string;
+    // Raw response envelope — passed into the modal so it can fall back
+    // to fields like evidence_refs / execution_time_ms when a legacy
+    // answer has no reasoning_trace.
+    response?: AskQuestionResponse | null;
   }>>([]);
   const [askError, setAskError] = useState<string | null>(null);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
@@ -76,13 +102,16 @@ export default function Dashboard() {
   // `null` means no modal open. Tracks a single modal at a time — matches
   // the UX pattern of opening one visualisation, reviewing it, closing.
   const [formulaModalIdx, setFormulaModalIdx] = useState<number | null>(null);
+  // Index of the chat message whose reasoning modal is currently open.
+  const [reasoningModalIdx, setReasoningModalIdx] = useState<number | null>(null);
+  // Latest in-flight user question — drives the ReasoningTheater header.
+  const [inflightQuestion, setInflightQuestion] = useState<string>('');
 
   // Conversations state
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [conversationsTotal, setConversationsTotal] = useState(0);
   const [isConversationsLoading, setIsConversationsLoading] = useState(false);
   const [_selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
-  const [usageSummary, setUsageSummary] = useState<UsageSummaryResponse | null>(null);
 
   const accessToken = tokens?.access_token ?? '';
   const section = location.pathname.split('/')[2] || 'ask-ai';
@@ -187,7 +216,6 @@ export default function Dashboard() {
     }
     if (section === 'conversations' && isAuthenticated && accessToken) {
       fetchConversations();
-      fetchUsageSummary();
     }
   }, [section, isAuthenticated, accessToken]);
 
@@ -206,17 +234,6 @@ export default function Dashboard() {
     }
   };
 
-  const fetchUsageSummary = async () => {
-    if (!accessToken) return;
-
-    try {
-      const summary = await withAuthRetry((token) => getUsageSummary(token, 30));
-      setUsageSummary(summary);
-    } catch (error) {
-      console.error('Failed to load usage summary:', error);
-    }
-  };
-
   const handleLoadConversation = async (conversationId: string) => {
     if (!accessToken) return;
 
@@ -228,17 +245,25 @@ export default function Dashboard() {
       setSelectedDataSourceId(conversation.data_source_id);
       setCurrentConversationId(conversation.id);
 
-      // Convert messages to chat history
-      const history = conversation.messages.map((msg) => ({
-        type: msg.role as 'user' | 'assistant',
-        content: msg.content,
-        codeUsed: msg.code_used,
-        executionTime: msg.execution_time_ms ?? undefined,
-        error: msg.is_error ? msg.error_message : null,
-        inputTokens: msg.input_tokens,
-        outputTokens: msg.output_tokens,
-        costUsd: msg.cost_usd,
-      }));
+      // Convert messages to chat history. For assistant rows, reduce the
+      // persisted verbose answer to a one-line headline so the bubble
+      // stays compact — the full detail isn't reachable on reload since
+      // the reasoning trace wasn't persisted to Postgres.
+      const history = conversation.messages.map((msg) => {
+        const isAssistant = msg.role === 'assistant';
+        const content = isAssistant ? deriveHeadline(msg.content) : msg.content;
+        return {
+          type: msg.role as 'user' | 'assistant',
+          content,
+          detailedContent: isAssistant ? msg.content : null,
+          codeUsed: msg.code_used,
+          executionTime: msg.execution_time_ms ?? undefined,
+          error: msg.is_error ? msg.error_message : null,
+          inputTokens: msg.input_tokens,
+          outputTokens: msg.output_tokens,
+          costUsd: msg.cost_usd,
+        };
+      });
       setChatHistory(history);
 
       navigate('/dashboard/ask-ai');
@@ -320,6 +345,7 @@ export default function Dashboard() {
     if (!q.trim() || !selectedDataSourceId || !accessToken) return;
 
     setIsAskingQuestion(true);
+    setInflightQuestion(q);
     setAskError(null);
 
     // Add user message to chat
@@ -336,14 +362,23 @@ export default function Dashboard() {
         setCurrentConversationId(response.conversation_id);
       }
 
-      // Add assistant response to chat
+      // v1.6 — the bubble shows the short one-liner; the verbose answer
+      // is reachable via "View reasoning →" which opens the detailed tab.
+      // Fall back gracefully when the backend didn't emit a short form
+      // (e.g. cached legacy answers, error paths).
+      const detailed = response.detailed_answer ?? formatAnswer(response.answer);
+      const short =
+        response.short_answer && response.short_answer.trim().length > 0
+          ? response.short_answer
+          : deriveHeadline(detailed);
+      const bubbleContent = response.success ? short : `Error: ${response.error}`;
+
       setChatHistory((prev) => [
         ...prev,
         {
           type: 'assistant',
-          content: response.success
-            ? formatAnswer(response.answer)
-            : `Error: ${response.error}`,
+          content: bubbleContent,
+          detailedContent: response.success ? detailed : null,
           codeUsed: response.code_used,
           executionTime: response.execution_time_ms,
           error: response.error,
@@ -352,6 +387,9 @@ export default function Dashboard() {
           costUsd: response.cost_usd,
           trace: response.trace ?? null,
           chartData: response.chart_data ?? null,
+          reasoningTrace: response.reasoning_trace ?? null,
+          question: q,
+          response,
         },
       ]);
     } catch (error) {
@@ -365,8 +403,10 @@ export default function Dashboard() {
       ]);
     } finally {
       setIsAskingQuestion(false);
+      setInflightQuestion('');
     }
   };
+
 
   const formatAnswer = (answer: unknown): string => {
     if (answer === null || answer === undefined) return 'No result';
@@ -654,33 +694,43 @@ export default function Dashboard() {
                               {msg.error ? (
                                 <p className="text-red-600">{msg.content}</p>
                               ) : (
-                                <AnswerMarkdown content={msg.content} />
+                                // Short one-line headline. The verbose
+                                // answer lives behind "View reasoning →"
+                                // in the View Details tab.
+                                <p className="text-[19px] font-medium leading-8 text-[#0f1020]">
+                                  {msg.content}
+                                </p>
                               )}
 
-                              {/* Open the formula-visualisation modal when
-                                  the coordinator's answer carries a
-                                  backward_trace. Modal hosts a Map and
-                                  a Formula (signed-chips) view. */}
+                              {/* View reasoning → opens the post-hoc
+                                  defensibility modal (stepper, KPIs,
+                                  View Details, How it Works). Always
+                                  surfaces for assistant answers, error
+                                  or not — so the link placement is
+                                  consistent and learnable. */}
+                              {!msg.error && msg.question && (
+                                <button
+                                  type="button"
+                                  onClick={() => setReasoningModalIdx(idx)}
+                                  className="mt-4 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#7a7d92] hover:text-[#5b21b6] transition"
+                                >
+                                  View reasoning
+                                  <span aria-hidden>→</span>
+                                </button>
+                              )}
+
+                              {/* Formula-visualisation link retained —
+                                  orthogonal to the reasoning modal, this
+                                  one opens the DAG / equation view for
+                                  formula-bearing cells. */}
                               {!msg.error && msg.trace && (
                                 <button
                                   type="button"
                                   onClick={() => setFormulaModalIdx(idx)}
-                                  className="mt-3 inline-flex items-center gap-2 rounded-lg border border-[#8243EA]/30 bg-[#8243EA]/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5b21b6] hover:bg-[#8243EA]/20 hover:border-[#8243EA]/50 transition"
+                                  className="ml-3 mt-4 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#7a7d92] hover:text-[#5b21b6] transition"
                                 >
-                                  <svg
-                                    width="14"
-                                    height="14"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  >
-                                    <circle cx="12" cy="12" r="9" />
-                                    <path d="M12 3v9l7 4" />
-                                  </svg>
                                   Visualise formula
+                                  <span aria-hidden>→</span>
                                 </button>
                               )}
 
@@ -694,19 +744,7 @@ export default function Dashboard() {
                     ))}
 
                     {isAskingQuestion && (
-                      <div className="agentic-slide-up flex justify-start">
-                        <div className="flex max-w-[88%] gap-3">
-                          <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[linear-gradient(135deg,#8243EA,#2563EB)] text-[10px] font-bold text-white shadow-[0_4px_14px_rgba(130,67,234,0.35)] cockpit-active-pulse">
-                            DI
-                          </span>
-                          <div className="rounded-2xl rounded-tl-md border border-[#e3e5ee] bg-white px-4 py-3 text-sm text-[#5a5c70]">
-                            <div className="flex items-center gap-2">
-                              <div className="animate-spin h-4 w-4 border-2 border-[#8243EA] border-t-transparent rounded-full" />
-                              <span>Reasoning…</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                      <ReasoningTheater question={inflightQuestion} />
                     )}
                   </div>
                 )}
@@ -932,32 +970,6 @@ export default function Dashboard() {
       case 'conversations':
         return (
           <div className="h-full m-4 flex flex-col gap-4">
-            {/* Usage Summary Card */}
-            {usageSummary && (
-              <div className="bg-white border border-[#e3e5ee] rounded-2xl p-6 shadow-[0_4px_18px_rgba(15,16,32,0.04)]">
-                <p className="text-[10px] uppercase tracking-[0.28em] text-[#7a7d92] font-semibold">Usage</p>
-                <h3 className="text-[#0f1020] font-semibold mt-1 mb-4">Last {usageSummary.period_days} days</h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
-                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Total calls</p>
-                    <p className="text-2xl font-bold text-[#0f1020] mt-1">{usageSummary.total_calls.toLocaleString()}</p>
-                  </div>
-                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
-                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Input tokens</p>
-                    <p className="text-2xl font-bold text-[#0f1020] mt-1">{usageSummary.total_input_tokens.toLocaleString()}</p>
-                  </div>
-                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
-                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Output tokens</p>
-                    <p className="text-2xl font-bold text-[#0f1020] mt-1">{usageSummary.total_output_tokens.toLocaleString()}</p>
-                  </div>
-                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
-                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Total cost</p>
-                    <p className="text-2xl font-bold text-emerald-600 mt-1">${usageSummary.total_cost_usd.toFixed(4)}</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
             <div className="bg-white border border-[#e3e5ee] rounded-2xl flex-1 overflow-hidden flex flex-col shadow-[0_4px_18px_rgba(15,16,32,0.04)]">
               {/* Header */}
               <div className="px-6 py-4 border-b border-[#e3e5ee] flex items-center justify-between">
@@ -1065,9 +1077,11 @@ export default function Dashboard() {
   // The formula-visualisation modal lives at the Dashboard root (rather
   // than inline in each message) because only one can be open at a time
   // and we want a single React portal instance owning body scroll lock
-  // and backdrop.
+  // and backdrop. Same applies to the reasoning modal.
   const modalTrace =
     formulaModalIdx != null ? chatHistory[formulaModalIdx]?.trace ?? null : null;
+  const reasoningEntry =
+    reasoningModalIdx != null ? chatHistory[reasoningModalIdx] ?? null : null;
 
   return (
     <Layout activeNavItem={section} onNavItemClick={handleNavClick} onNewChat={handleNewChat}>
@@ -1079,6 +1093,12 @@ export default function Dashboard() {
           onClose={() => setFormulaModalIdx(null)}
         />
       )}
+      <ReasoningModal
+        open={reasoningModalIdx != null && !!reasoningEntry}
+        question={reasoningEntry?.question ?? ''}
+        response={reasoningEntry?.response ?? null}
+        onClose={() => setReasoningModalIdx(null)}
+      />
     </Layout>
   );
 }

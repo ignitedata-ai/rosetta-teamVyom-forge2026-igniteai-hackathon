@@ -31,6 +31,11 @@ from .conversation import (
     question_hash,
 )
 from .models import WorkbookModel
+from .reasoning import (
+    build_reasoning_trace,
+    count_cells_referenced,
+    split_short_detailed,
+)
 from .specialists import formula_explainer
 from .tools import TOOLS, execute_tool
 
@@ -171,15 +176,38 @@ DELEGATION:
   will run the specialist and splice in the grounded prose.
   Only do this for formula-explanation questions.
 
-OUTPUT:
-- Your final answer is free-form prose but MUST adhere to rules 1–7.
-- Cite evidence inline, e.g. "(P&L Summary!G32: $142,300)".
-- Keep answers concise. Lead with the answer, then supporting trace.
+OUTPUT FORMAT — MANDATORY:
+Your final answer MUST be split into two parts, wrapped in these exact XML-
+style markers. Nothing else before <SHORT>, nothing after </DETAILED>.
+
+    <SHORT>One-sentence headline answer. Include the key number/fact and the primary cell ref. Plain prose, no markdown, ≤ 180 characters. This is what the user sees by default.</SHORT>
+    <DETAILED>
+    The full, grounded answer with citations, formulas, trace, and any
+    supporting bullets. This is what the user sees when they click "View
+    Details" — the rich explanation with evidence. Use the backticked-
+    cell-ref and formula style from the Output Style rules above. Any
+    FormulaExplainer delegation marker goes inside this block.
+    </DETAILED>
+
+Both blocks MUST be present in every final answer. The SHORT block is the
+headline — if the question has multiple parts, the SHORT block summarises
+the top-line conclusion and the DETAILED block covers the rest.
+
+OTHER OUTPUT RULES (apply inside <DETAILED>):
+- Cite evidence inline, e.g. "(`P&L Summary!G32`: $142,300)".
+- Lead with the answer, then supporting trace.
+- Adhere to rules 1–7 above.
 """
 
 
 MAX_TOOL_TURNS = 10
 MAX_AUDIT_RETRIES = 1  # total attempts = 1 + retries
+
+# Sentinel returned by `_run_tool_loop` when Claude never end-turns within
+# MAX_TOOL_TURNS. Exported so the outer `answer()` can detect it and swap
+# in a user-friendly message in place of the raw debug string.
+MAX_TOOL_TURNS_SENTINEL = "(Coordinator hit max tool turns without producing an answer.)"
+NO_ANSWER_MESSAGE = "Sorry, I do not have an answer for this."
 
 
 async def answer(
@@ -197,16 +225,31 @@ async def answer(
     function without them.
     """
     state.append_user(message)
+    turn_started_at = time.time()
+
+    # Track whether the active_entity was carried over from a prior turn.
+    # Used by the reasoning narrative to surface "Context carried forward…".
+    inherited_entity = state.active_entity is not None
 
     # --- Cache lookup ---
     qh = question_hash(message, state.scenario_overrides)
     cached = state.answer_cache.get(qh)
     if cached and _cached_is_fresh(cached):
         log.info("Cache hit for question_hash=%s", qh)
-        state.append_assistant(cached.answer_text)
+        # Persist the short answer (if we have it) to keep the chat log
+        # aligned with what the user sees. Fall back to full answer_text
+        # for legacy cache entries.
+        cached_short = cached.short_answer or ""
+        cached_detailed = cached.detailed_answer or cached.answer_text
+        if not cached_short:
+            cached_short, cached_detailed = split_short_detailed(cached.answer_text)
+        state.append_assistant(cached_detailed)
         return {
             "session_id": state.session_id,
-            "answer": cached.answer_text,
+            "answer": cached_detailed,
+            "short_answer": cached_short,
+            "detailed_answer": cached_detailed,
+            "reasoning_trace": cached.reasoning_trace,
             "trace": cached.trace,
             "evidence": [{"ref": r} for r in cached.evidence_refs],
             "escalated": False,
@@ -239,7 +282,10 @@ async def answer(
     chart_for_ui: Optional[dict] = None
     violation_retries_used = 0
     final_text = ""
-    final_response = None
+    final_short = ""
+    final_detailed = ""
+    audit_status = "unknown"
+    confidence = 0.0
 
     while True:
         attempt_text, attempt_tool_calls, attempt_trace, attempt_chart = await _run_tool_loop(
@@ -257,24 +303,49 @@ async def answer(
         if attempt_chart and not chart_for_ui:
             chart_for_ui = attempt_chart
 
-        # Splice in FormulaExplainer if the coordinator requested delegation
+        # Splice in FormulaExplainer if the coordinator requested delegation.
+        # The marker lives inside <DETAILED>…</DETAILED> so we don't need to
+        # pre-split; the substitution handles either location gracefully.
         attempt_text, explainer_invoked = _maybe_delegate_to_explainer(attempt_text, wb, message)
         if explainer_invoked and not trace_for_ui:
             # Pull the trace from recent tool calls
             trace_for_ui = _latest_trace_from_log(state)
 
-        # Audit
-        result = auditor_module.audit(attempt_text, state.tool_call_log, wb)
+        # Short-circuit: Claude never end-turned within MAX_TOOL_TURNS. We
+        # don't have a real answer and pretending otherwise would mis-verdict
+        # the response as Verified (there are no numbers for the auditor to
+        # reject). Surface a friendly "no answer" message instead and let
+        # the reasoning trace reflect which stages did fire before we gave up.
+        if attempt_text == MAX_TOOL_TURNS_SENTINEL:
+            log.info("Coordinator hit max tool turns; returning friendly no-answer response.")
+            final_text = NO_ANSWER_MESSAGE
+            final_short = NO_ANSWER_MESSAGE
+            final_detailed = NO_ANSWER_MESSAGE
+            audit_status = "unknown"
+            confidence = 0.0
+            break
+
+        # Audit — only the DETAILED block carries cited numbers. The SHORT
+        # block paraphrases for display and doesn't introduce new facts, so
+        # auditing just the detailed portion avoids duplicate violations
+        # when the same number appears in both places.
+        attempt_short, attempt_detailed = split_short_detailed(attempt_text)
+        result = auditor_module.audit(attempt_detailed or attempt_text, state.tool_call_log, wb)
 
         if result.status == "passed":
             final_text = attempt_text
+            final_short = attempt_short
+            final_detailed = attempt_detailed or attempt_text
             audit_status = "passed"
             confidence = 0.9
             break
 
         if violation_retries_used >= MAX_AUDIT_RETRIES:
             # Second-chance: emit partial "I don't know" wrapper
-            final_text = _build_partial_answer(attempt_text, result)
+            partial = _build_partial_answer(attempt_detailed or attempt_text, result)
+            final_text = f"<SHORT>{_first_line(partial)}</SHORT>\n<DETAILED>\n{partial}\n</DETAILED>"
+            final_short = _first_line(partial)
+            final_detailed = partial
             audit_status = "unknown"
             confidence = 0.3
             break
@@ -293,13 +364,32 @@ async def answer(
 
     # --- Post-process ---
     # Extract evidence refs from tool log
-    evidence_refs = _extract_evidence_refs(state.tool_call_log[-tool_calls_made:])
-    # Update active_entity
-    extracted = extract_entity_from_text(final_text)
+    recent_tool_calls = state.tool_call_log[-tool_calls_made:] if tool_calls_made else []
+    evidence_refs = _extract_evidence_refs(recent_tool_calls)
+    # Update active_entity (look at the detailed block so we don't get tricked
+    # by paraphrasing in SHORT)
+    extracted = extract_entity_from_text(final_detailed)
     if extracted:
         state.active_entity = extracted
 
-    # Cache successful answers only
+    # --- Build the defensibility trace for the UI ---
+    total_latency_ms = int((time.time() - turn_started_at) * 1000)
+    cells_referenced = count_cells_referenced(final_detailed, recent_tool_calls, list(evidence_refs))
+    reasoning = build_reasoning_trace(
+        question=message,
+        tool_calls=recent_tool_calls,
+        audit_status=audit_status,
+        latency_ms=total_latency_ms,
+        cells_referenced=cells_referenced,
+        short_answer=final_short,
+        detailed_answer=final_detailed,
+        active_entity=state.active_entity,
+        inherited_entity=inherited_entity,
+    )
+    reasoning_dict = reasoning.model_dump()
+
+    # Cache successful answers only — cache the already-split forms so a
+    # cache hit doesn't have to re-run the splitter or the trace builder.
     if audit_status == "passed":
         state.answer_cache[qh] = CachedAnswer(
             question_hash=qh,
@@ -308,15 +398,21 @@ async def answer(
             trace=trace_for_ui,
             confidence=confidence,
             audit_status=audit_status,
+            short_answer=final_short,
+            detailed_answer=final_detailed,
+            reasoning_trace=reasoning_dict,
         )
 
-    state.append_assistant(final_text)
+    # Persist the detailed answer in the conversation log — that's what the
+    # model (and the user) needs to see in history. The short form is a
+    # presentation detail, not the source of truth.
+    state.append_assistant(final_detailed)
 
     # Tool-call trail for the bridge (shows up in Akash's "View Code" panel)
     tool_trail = (
         [
             {"tool_name": tc.tool_name, "input": tc.input, "latency_ms": tc.latency_ms}
-            for tc in state.tool_call_log[-tool_calls_made:]
+            for tc in recent_tool_calls
         ]
         if tool_calls_made
         else []
@@ -324,7 +420,11 @@ async def answer(
 
     return {
         "session_id": state.session_id,
-        "answer": final_text,
+        # `answer` stays as the detailed form for backwards compatibility.
+        "answer": final_detailed,
+        "short_answer": final_short,
+        "detailed_answer": final_detailed,
+        "reasoning_trace": reasoning_dict,
         "trace": trace_for_ui,
         "chart_data": chart_for_ui,
         "evidence": [{"ref": r} for r in evidence_refs],
@@ -349,12 +449,39 @@ def _cached_is_fresh(cached: CachedAnswer) -> bool:
     return (time.time() - cached.cached_at) < ttl
 
 
+def _first_line(text: str) -> str:
+    """Compact first-line extractor for building SHORT wrappers in fallbacks."""
+    if not text:
+        return ""
+    first = text.strip().split("\n", 1)[0].strip()
+    if len(first) > 180:
+        first = first[:179].rstrip() + "…"
+    return first
+
+
 def _no_api_key_response(state: ConversationState, message: str, reason: str = "ANTHROPIC_API_KEY not set") -> dict:
     msg = f"I can't answer this: {reason}. The coordinator requires Claude for planning. Set ANTHROPIC_API_KEY and retry."
     state.append_assistant(msg)
+    # Build a minimal reasoning trace so the UI can still render a coherent
+    # "View reasoning" modal when the API key is missing or the SDK fails to
+    # load. All stages except UNDERSTAND come back as `skipped`.
+    reasoning = build_reasoning_trace(
+        question=message,
+        tool_calls=[],
+        audit_status="unknown",
+        latency_ms=0,
+        cells_referenced=0,
+        short_answer=msg,
+        detailed_answer=msg,
+        active_entity=state.active_entity,
+        inherited_entity=False,
+    )
     return {
         "session_id": state.session_id,
         "answer": msg,
+        "short_answer": msg,
+        "detailed_answer": msg,
+        "reasoning_trace": reasoning.model_dump(),
         "trace": None,
         "evidence": [],
         "escalated": False,
@@ -464,7 +591,7 @@ async def _run_tool_loop(
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
         return text, tool_calls_made, trace_seen, chart_seen
 
-    return "(Coordinator hit max tool turns without producing an answer.)", tool_calls_made, trace_seen, chart_seen
+    return MAX_TOOL_TURNS_SENTINEL, tool_calls_made, trace_seen, chart_seen
 
 
 def _maybe_delegate_to_explainer(text: str, wb: WorkbookModel, original_question: str) -> tuple[str, bool]:

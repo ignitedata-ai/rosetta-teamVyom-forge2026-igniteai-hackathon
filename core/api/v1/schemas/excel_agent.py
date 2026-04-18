@@ -102,6 +102,10 @@ class AskQuestionResponse(BaseModel):
     evidence_refs: list[str] | None = None  # cited cell refs
     active_entity: str | None = None  # last referenced cell ref / metric
     scenario_overrides: dict | None = None  # active what-if overrides
+    # --- v1.6 defensibility fields ---
+    short_answer: str | None = None  # one-line headline for the chat bubble
+    detailed_answer: str | None = None  # full verbose answer (View Details tab)
+    reasoning_trace: dict | None = None  # pipeline stages + narrative + KPIs
 
 
 class QueryHistoryItem(BaseModel):

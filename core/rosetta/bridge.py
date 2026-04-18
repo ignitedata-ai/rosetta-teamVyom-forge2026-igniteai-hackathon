@@ -75,6 +75,13 @@ def coordinator_to_service_result(
         "evidence_refs": [e.get("ref") for e in coord_result.get("evidence", []) if e.get("ref")],
         "active_entity": coord_result.get("active_entity"),
         "scenario_overrides": coord_result.get("scenario_overrides", {}),
+        # --- v1.6 defensibility fields ---
+        # Short one-line headline for the chat bubble; detailed verbose
+        # answer for the "View Details" tab; structured trace for the
+        # "How it Works" tab + pipeline stepper + KPI cards.
+        "short_answer": coord_result.get("short_answer"),
+        "detailed_answer": coord_result.get("detailed_answer"),
+        "reasoning_trace": coord_result.get("reasoning_trace"),
     }
 
 

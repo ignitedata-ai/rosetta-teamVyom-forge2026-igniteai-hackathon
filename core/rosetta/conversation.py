@@ -44,12 +44,17 @@ class ToolCall:
 @dataclass
 class CachedAnswer:
     question_hash: str
-    answer_text: str
+    answer_text: str  # full marker-wrapped coordinator output (legacy field)
     evidence_refs: list[str]
     trace: Optional[dict]
     confidence: float
     audit_status: str
     cached_at: float = field(default_factory=time.time)
+    # Short/detailed split and reasoning trace, populated since v1.6.
+    # Optional so existing cache entries stay readable across restarts.
+    short_answer: Optional[str] = None
+    detailed_answer: Optional[str] = None
+    reasoning_trace: Optional[dict] = None
 
 
 @dataclass

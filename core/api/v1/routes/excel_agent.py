@@ -331,6 +331,10 @@ async def ask_question(
             evidence_refs=result.get("evidence_refs"),
             active_entity=result.get("active_entity"),
             scenario_overrides=result.get("scenario_overrides"),
+            # v1.6 defensibility — short/detailed split + reasoning trace
+            short_answer=result.get("short_answer"),
+            detailed_answer=result.get("detailed_answer"),
+            reasoning_trace=result.get("reasoning_trace"),
         )
 
     except NotFoundError as e:
