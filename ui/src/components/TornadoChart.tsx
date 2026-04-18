@@ -37,11 +37,11 @@ export default function TornadoChart({ data, baseline, yLabel, deltaPct }: Props
   const height = rows.length * rowH + 36;
 
   return (
-    <div className="mt-3 border border-slate-700 rounded-lg bg-slate-950/60 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700 text-xs text-slate-300">
+    <div className="mt-3 border border-[#e3e5ee] rounded-lg bg-[#f9f8fd] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#e3e5ee] text-xs text-[#5a5c70]">
         <div className="flex items-center gap-3">
-          <span className="font-semibold">Sensitivity — tornado</span>
-          <span className="text-slate-500">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-[#0f1020] font-semibold">Sensitivity · tornado</span>
+          <span className="text-[#7a7d92]">
             baseline {yLabel ?? 'target'} = {formatNumber(baseline)}
             {deltaPct != null ? ` · ±${deltaPct.toFixed(0)}% inputs` : ''}
           </span>
@@ -54,7 +54,7 @@ export default function TornadoChart({ data, baseline, yLabel, deltaPct }: Props
           y1={18}
           x2={pad + innerW / 2}
           y2={height - 12}
-          stroke="#475569"
+          stroke="#9a9caf"
           strokeDasharray="3 3"
         />
         {rows.map((r, i) => {
@@ -69,34 +69,31 @@ export default function TornadoChart({ data, baseline, yLabel, deltaPct }: Props
                 y={y + 14}
                 textAnchor="end"
                 fontSize="11"
-                fill="#cbd5e1"
+                fill="#5a5c70"
                 fontFamily="monospace"
               >
                 {r.label.length > 16 ? r.label.slice(0, 15) + '…' : r.label}
               </text>
-              {/* Low side */}
               <rect
                 x={center - lowW}
                 y={y}
                 width={lowW}
                 height={18}
-                fill={r.low < 0 ? '#ef4444' : '#22c55e'}
+                fill={r.low < 0 ? '#ef4444' : '#10b981'}
                 opacity={0.85}
               />
-              {/* High side */}
               <rect
                 x={center}
                 y={y}
                 width={highW}
                 height={18}
-                fill={r.high > 0 ? '#22c55e' : '#ef4444'}
+                fill={r.high > 0 ? '#10b981' : '#ef4444'}
                 opacity={0.85}
               />
-              {/* Labels outside the bars */}
-              <text x={center - lowW - 4} y={y + 14} textAnchor="end" fontSize="10" fill="#94a3b8">
+              <text x={center - lowW - 4} y={y + 14} textAnchor="end" fontSize="10" fill="#7a7d92">
                 {formatNumber(r.low)}
               </text>
-              <text x={center + highW + 4} y={y + 14} textAnchor="start" fontSize="10" fill="#94a3b8">
+              <text x={center + highW + 4} y={y + 14} textAnchor="start" fontSize="10" fill="#7a7d92">
                 {formatNumber(r.high)}
               </text>
             </g>

@@ -20,14 +20,14 @@ import type { DependencyGraphData, DependencyGraphNodeData } from '../api/excelA
 const NODE_WIDTH = 220;
 const NODE_HEIGHT = 96;
 
-// --- Colors per sheet (cycle through a small palette) ---
+// --- Colors per sheet (light theme — soft tinted backgrounds) ---
 const SHEET_PALETTE = [
-  { bg: 'bg-indigo-950/60', border: 'border-indigo-400', dot: 'bg-indigo-400' },
-  { bg: 'bg-emerald-950/60', border: 'border-emerald-400', dot: 'bg-emerald-400' },
-  { bg: 'bg-amber-950/60', border: 'border-amber-400', dot: 'bg-amber-400' },
-  { bg: 'bg-rose-950/60', border: 'border-rose-400', dot: 'bg-rose-400' },
-  { bg: 'bg-sky-950/60', border: 'border-sky-400', dot: 'bg-sky-400' },
-  { bg: 'bg-purple-950/60', border: 'border-purple-400', dot: 'bg-purple-400' },
+  { bg: 'bg-[#f5f0ff]', border: 'border-[#8243EA]', dot: 'bg-[#8243EA]' },
+  { bg: 'bg-emerald-50', border: 'border-emerald-500', dot: 'bg-emerald-500' },
+  { bg: 'bg-amber-50', border: 'border-amber-500', dot: 'bg-amber-500' },
+  { bg: 'bg-rose-50', border: 'border-rose-500', dot: 'bg-rose-500' },
+  { bg: 'bg-sky-50', border: 'border-sky-500', dot: 'bg-sky-500' },
+  { bg: 'bg-fuchsia-50', border: 'border-fuchsia-500', dot: 'bg-fuchsia-500' },
 ];
 
 function sheetColor(sheet: string, sheetOrder: string[]) {
@@ -38,39 +38,39 @@ function sheetColor(sheet: string, sheetOrder: string[]) {
 // --- Custom node component ---
 function CellNode({ data }: NodeProps<Node<DependencyGraphNodeData & { palette: typeof SHEET_PALETTE[0] }>>) {
   const palette = data.palette;
-  const focalRing = data.is_focal ? 'ring-2 ring-white ring-offset-1 ring-offset-slate-900' : '';
+  const focalRing = data.is_focal ? 'ring-2 ring-[#5b21b6] ring-offset-1 ring-offset-white' : '';
   return (
     <div
-      className={`${palette.bg} ${palette.border} ${focalRing} border rounded-lg px-3 py-2 text-slate-100 shadow-md w-[220px]`}
+      className={`${palette.bg} ${palette.border} ${focalRing} border rounded-lg px-3 py-2 text-[#0f1020] shadow-[0_4px_14px_rgba(15,16,32,0.08)] w-[220px]`}
       title={data.ref}
     >
-      <Handle type="target" position={Position.Left} className="!bg-slate-400" />
+      <Handle type="target" position={Position.Left} className="!bg-[#9a9caf]" />
       <div className="flex items-center gap-2 mb-1">
         <span className={`w-2 h-2 rounded-full ${palette.dot}`} />
-        <span className="text-[10px] font-mono text-slate-400 truncate">{data.sheet}</span>
-        <span className="text-[10px] font-mono text-slate-500 ml-auto">{data.coord}</span>
+        <span className="text-[10px] font-mono text-[#5a5c70] truncate">{data.sheet}</span>
+        <span className="text-[10px] font-mono text-[#7a7d92] ml-auto">{data.coord}</span>
       </div>
       {data.label && (
         <div className="text-sm font-semibold truncate mb-0.5">{data.label}</div>
       )}
       {data.value != null && (
-        <div className="text-xs text-emerald-300 font-mono truncate">{data.value}</div>
+        <div className="text-xs text-emerald-700 font-mono truncate">{data.value}</div>
       )}
       {data.formula && (
-        <div className="text-[10px] text-slate-400 font-mono truncate mt-1" title={data.formula}>
+        <div className="text-[10px] text-[#5a5c70] font-mono truncate mt-1" title={data.formula}>
           ={data.formula}
         </div>
       )}
       {data.is_hardcoded && (
-        <div className="text-[9px] text-amber-300 mt-1">⚠ hardcoded</div>
+        <div className="text-[9px] text-amber-700 mt-1">⚠ hardcoded</div>
       )}
       {data.is_volatile && (
-        <div className="text-[9px] text-amber-300 mt-1">⚠ volatile</div>
+        <div className="text-[9px] text-orange-700 mt-1">⚡ volatile</div>
       )}
       {data.named_range && (
-        <div className="text-[9px] text-indigo-300 mt-1">⬩ {data.named_range}</div>
+        <div className="text-[9px] text-[#5b21b6] mt-1">⬩ {data.named_range}</div>
       )}
-      <Handle type="source" position={Position.Right} className="!bg-slate-400" />
+      <Handle type="source" position={Position.Right} className="!bg-[#9a9caf]" />
     </div>
   );
 }
@@ -127,7 +127,7 @@ export default function DependencyGraphCard({ graph }: Props) {
       target: e.target,
       type: 'smoothstep',
       animated: false,
-      style: { stroke: '#94a3b8', strokeWidth: 1.5 },
+      style: { stroke: '#9a9caf', strokeWidth: 1.5 },
     }));
     return { rfNodes: layout(rawNodes, rawEdges), rfEdges: rawEdges };
   }, [graph, sheetOrder]);
@@ -138,33 +138,32 @@ export default function DependencyGraphCard({ graph }: Props) {
   }, []);
 
   const containerClass = fullscreen
-    ? 'fixed inset-4 z-50 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl'
-    : 'mt-3 border border-slate-700 rounded-lg bg-slate-950/50';
+    ? 'fixed inset-4 z-50 bg-white border border-[#e3e5ee] rounded-xl shadow-[0_24px_80px_rgba(15,16,32,0.2)]'
+    : 'mt-3 border border-[#e3e5ee] rounded-lg bg-[#f9f8fd]';
   const heightClass = fullscreen ? 'h-[calc(100%-48px)]' : 'h-[360px]';
 
   return (
     <div className={containerClass}>
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700">
-        <div className="flex items-center gap-3 text-xs text-slate-300">
-          <span className="font-semibold">Dependency graph</span>
-          <span className="text-slate-500">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#e3e5ee] flex-wrap gap-y-1">
+        <div className="flex items-center gap-3 text-xs text-[#5a5c70]">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-[#0f1020] font-semibold">Dependency graph</span>
+          <span className="text-[#7a7d92]">
             {graph.node_count} cells · {graph.edge_count} edges
           </span>
-          <span className="text-slate-500 font-mono truncate max-w-[200px]" title={graph.focal_ref}>
+          <span className="text-[#7a7d92] font-mono truncate max-w-[200px]" title={graph.focal_ref}>
             focal: {graph.focal_ref}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* Sheet legend */}
           {sheetOrder.slice(0, 4).map((s, i) => (
-            <span key={s} className="flex items-center gap-1 text-[10px] text-slate-400">
+            <span key={s} className="flex items-center gap-1 text-[10px] text-[#5a5c70]">
               <span className={`w-2 h-2 rounded-full ${SHEET_PALETTE[i % SHEET_PALETTE.length].dot}`} />
               <span className="truncate max-w-[80px]">{s}</span>
             </span>
           ))}
           <button
             onClick={() => setFullscreen(!fullscreen)}
-            className="text-xs text-slate-300 hover:text-white border border-slate-600 rounded px-2 py-0.5"
+            className="text-[10px] uppercase tracking-[0.16em] font-semibold text-[#5a5c70] hover:text-[#5b21b6] border border-[#e3e5ee] rounded px-2 py-0.5"
           >
             {fullscreen ? 'Close' : 'Expand'}
           </button>
@@ -182,9 +181,9 @@ export default function DependencyGraphCard({ graph }: Props) {
           minZoom={0.2}
           maxZoom={2}
         >
-          <Background color="#334155" gap={24} />
-          <Controls className="!bg-slate-800 !border-slate-700" />
-          {fullscreen && <MiniMap pannable zoomable className="!bg-slate-900 !border-slate-700" />}
+          <Background color="#d0d3df" gap={24} />
+          <Controls className="!bg-white !border-[#e3e5ee]" />
+          {fullscreen && <MiniMap pannable zoomable className="!bg-white !border-[#e3e5ee]" />}
         </ReactFlow>
       </div>
     </div>

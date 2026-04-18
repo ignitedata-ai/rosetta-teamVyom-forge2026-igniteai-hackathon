@@ -26,6 +26,7 @@ export interface ExcelSchemaResponse {
   workbook_purpose: string | null;
   manifest: Record<string, unknown>;
   semantic_schema: Record<string, unknown>;
+  enrichment?: Record<string, unknown>;
   detected_colors: string[];
   total_sections: number;
   total_merged_regions: number;

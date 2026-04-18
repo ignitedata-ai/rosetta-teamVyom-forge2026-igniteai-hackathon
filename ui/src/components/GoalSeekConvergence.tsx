@@ -47,20 +47,18 @@ export default function GoalSeekConvergence({ x, y, targetLine, yLabel }: Props)
     .join(' ');
 
   return (
-    <div className="mt-3 border border-slate-700 rounded-lg bg-slate-950/60 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700 text-xs text-slate-300">
+    <div className="mt-3 border border-[#e3e5ee] rounded-lg bg-[#f9f8fd] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#e3e5ee] text-xs text-[#5a5c70]">
         <div className="flex items-center gap-3">
-          <span className="font-semibold">Goal-seek convergence</span>
-          <span className="text-slate-500">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-[#0f1020] font-semibold">Goal-seek convergence</span>
+          <span className="text-[#7a7d92]">
             {x.length} iterations · final {formatNumber(y[y.length - 1])}
           </span>
         </div>
       </div>
       <svg width={width} height={height} className="block">
-        {/* Axes */}
-        <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="#334155" />
-        <line x1={padL} y1={padT + plotH} x2={padL + plotW} y2={padT + plotH} stroke="#334155" />
-        {/* Target line */}
+        <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="#d0d3df" />
+        <line x1={padL} y1={padT + plotH} x2={padL + plotW} y2={padT + plotH} stroke="#d0d3df" />
         {targetLine != null && Number.isFinite(targetLine) && (
           <g>
             <line
@@ -68,28 +66,25 @@ export default function GoalSeekConvergence({ x, y, targetLine, yLabel }: Props)
               y1={yScale(targetLine)}
               x2={padL + plotW}
               y2={yScale(targetLine)}
-              stroke="#fbbf24"
+              stroke="#f59e0b"
               strokeDasharray="4 4"
             />
-            <text x={padL + plotW - 4} y={yScale(targetLine) - 4} fontSize="10" fill="#fbbf24" textAnchor="end">
+            <text x={padL + plotW - 4} y={yScale(targetLine) - 4} fontSize="10" fill="#b45309" textAnchor="end">
               target {formatNumber(targetLine)}
             </text>
           </g>
         )}
-        {/* Trajectory */}
-        <path d={path} fill="none" stroke="#818cf8" strokeWidth="1.8" />
+        <path d={path} fill="none" stroke="#8243EA" strokeWidth="1.8" />
         {y.map((v, i) => (
-          <circle key={i} cx={xScale(x[i])} cy={yScale(v)} r="3" fill="#a5b4fc" />
+          <circle key={i} cx={xScale(x[i])} cy={yScale(v)} r="3" fill="#5b21b6" />
         ))}
-        {/* Y ticks */}
-        <text x={padL - 6} y={padT + 4} fontSize="10" fill="#94a3b8" textAnchor="end">
+        <text x={padL - 6} y={padT + 4} fontSize="10" fill="#7a7d92" textAnchor="end">
           {formatNumber(yMax)}
         </text>
-        <text x={padL - 6} y={padT + plotH} fontSize="10" fill="#94a3b8" textAnchor="end">
+        <text x={padL - 6} y={padT + plotH} fontSize="10" fill="#7a7d92" textAnchor="end">
           {formatNumber(yMin)}
         </text>
-        {/* Axis labels */}
-        <text x={padL + plotW / 2} y={height - 6} fontSize="10" fill="#64748b" textAnchor="middle">
+        <text x={padL + plotW / 2} y={height - 6} fontSize="10" fill="#9a9caf" textAnchor="middle">
           iteration
         </text>
         {yLabel && (
@@ -97,7 +92,7 @@ export default function GoalSeekConvergence({ x, y, targetLine, yLabel }: Props)
             x={12}
             y={padT + plotH / 2}
             fontSize="10"
-            fill="#64748b"
+            fill="#9a9caf"
             transform={`rotate(-90 12 ${padT + plotH / 2})`}
             textAnchor="middle"
           >

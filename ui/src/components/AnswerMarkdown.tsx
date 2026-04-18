@@ -2,14 +2,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 /**
- * AnswerMarkdown — renders assistant-generated markdown with a distinct
- * monospace style for inline code (`Sheet!Ref`, `=FORMULA`, `VLOOKUP`,
- * `FloorPlanRate`). Block code (triple-backtick fences) keeps a compact
- * dark panel so embedded formulas remain legible.
+ * AnswerMarkdown — renders assistant-generated markdown on a light surface.
+ * Inline code (`Sheet!Ref`, `=FORMULA`, named ranges) is highlighted in a
+ * subtle lavender pill; block code is a soft off-white panel.
  */
 export default function AnswerMarkdown({ content }: { content: string }) {
   return (
-    <div className="prose prose-invert prose-sm max-w-none text-gray-200 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm">
+    <div className="prose prose-sm max-w-none text-[#0f1020] [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -17,14 +16,14 @@ export default function AnswerMarkdown({ content }: { content: string }) {
             const isBlock = className?.includes('language-');
             if (isBlock) {
               return (
-                <pre className="mt-2 p-3 bg-[#1a1a2e] rounded-lg text-xs text-gray-300 overflow-x-auto">
+                <pre className="mt-2 p-3 bg-[#f9f8fd] border border-[#e3e5ee] rounded-lg text-xs text-[#0f1020] overflow-x-auto">
                   <code {...props}>{children}</code>
                 </pre>
               );
             }
             return (
               <code
-                className="font-mono text-[12px] text-indigo-200 bg-slate-800/70 px-1.5 py-0.5 rounded border border-slate-700/50"
+                className="font-mono text-[12px] text-[#5b21b6] bg-[#8243EA]/10 px-1.5 py-0.5 rounded border border-[#8243EA]/20"
                 {...props}
               >
                 {children}
@@ -35,7 +34,7 @@ export default function AnswerMarkdown({ content }: { content: string }) {
             return (
               <a
                 href={href}
-                className="text-indigo-300 underline hover:text-indigo-200"
+                className="text-[#5b21b6] underline hover:text-[#8243EA]"
                 target="_blank"
                 rel="noopener noreferrer"
                 {...props}
@@ -47,15 +46,15 @@ export default function AnswerMarkdown({ content }: { content: string }) {
           table({ children }) {
             return (
               <div className="overflow-x-auto my-2">
-                <table className="border-collapse border border-slate-700 text-xs">{children}</table>
+                <table className="border-collapse border border-[#e3e5ee] text-xs">{children}</table>
               </div>
             );
           },
           th({ children }) {
-            return <th className="border border-slate-700 px-2 py-1 bg-slate-800/60 text-left">{children}</th>;
+            return <th className="border border-[#e3e5ee] px-2 py-1 bg-[#f9f8fd] text-left text-[#0f1020]">{children}</th>;
           },
           td({ children }) {
-            return <td className="border border-slate-700 px-2 py-1">{children}</td>;
+            return <td className="border border-[#e3e5ee] px-2 py-1 text-[#0f1020]">{children}</td>;
           },
         }}
       >

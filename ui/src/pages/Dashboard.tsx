@@ -13,6 +13,7 @@ import {
   askQuestion,
   deleteConversation,
   getConversation,
+  getExcelSchema,
   getSchemaInfo,
   getSuggestedQuestions,
   getUsageSummary,
@@ -21,6 +22,7 @@ import {
   type AnalyticsChartData,
   type Conversation,
   type ConversationListItem,
+  type ExcelSchemaResponse,
   type SchemaInfoResponse,
   type TraceNode,
   type UsageSummaryResponse,
@@ -29,6 +31,7 @@ import Layout from '../components/Layout';
 import FormulaBreakdown from '../components/FormulaBreakdown';
 import AnswerMarkdown from '../components/AnswerMarkdown';
 import AnalyticsChart from '../components/AnalyticsChart';
+import SchemaInspector from '../components/SchemaInspector';
 
 export default function Dashboard() {
   const { isAuthenticated, isLoading, tokens, updateTokens, logout } = useAuth();
@@ -47,6 +50,10 @@ export default function Dashboard() {
   // Ask AI state
   const [selectedDataSourceId, setSelectedDataSourceId] = useState<string | null>(null);
   const [schemaInfo, setSchemaInfo] = useState<SchemaInfoResponse | null>(null);
+  const [workbookSchema, setWorkbookSchema] = useState<ExcelSchemaResponse | null>(null);
+  const [isSchemaOpen, setIsSchemaOpen] = useState(false);
+  const [isSchemaLoading, setIsSchemaLoading] = useState(false);
+  const [schemaLoadError, setSchemaLoadError] = useState<string | null>(null);
   const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
   const [question, setQuestion] = useState('');
   const [isAskingQuestion, setIsAskingQuestion] = useState(false);
@@ -435,7 +442,7 @@ export default function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#0B021C] flex items-center justify-center">
+      <div className="min-h-screen bg-[#f5f3fb] flex items-center justify-center">
         <div className="animate-spin h-8 w-8 border-4 border-[#8243EA] border-t-transparent rounded-full" />
       </div>
     );
@@ -447,142 +454,164 @@ export default function Dashboard() {
 
   const renderContent = () => {
     switch (section) {
-      case 'ask-ai':
+      case 'ask-ai': {
+        const selectedSource = dataSources.find((ds) => ds.id === selectedDataSourceId) || null;
+        const workbookReady = Boolean(schemaInfo?.is_ready_for_queries);
+        const statusLabel = !selectedSource
+          ? ''
+          : workbookReady
+          ? 'Ready'
+          : (schemaInfo?.processing_status || 'Pending');
         return (
-          <div className="h-full flex flex-col">
-            {/* Main Content Area - Dark Card */}
-            <div className="flex-1 m-4 bg-[#1a1a2e]/60 backdrop-blur-sm rounded-2xl overflow-hidden flex flex-col border border-white/10">
-              {/* Card Header with Data Source Selector */}
-              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="grid grid-cols-2 gap-1">
-                    <div className="w-2 h-2 border-2 border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border-2 border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border-2 border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border-2 border-[#8243EA] rounded-sm" />
-                  </div>
-                  <span className="text-[#A78BFA] font-bold text-lg">Ask AI</span>
-                </div>
+          <div className="relative flex h-full flex-col">
+            {/* Floating purple/blue orbs */}
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-64 overflow-hidden">
+              <div className="agentic-orb absolute left-[8%] top-10 h-48 w-48 rounded-full bg-[#8243EA]/10" />
+              <div className="agentic-orb absolute right-[12%] top-6 h-56 w-56 rounded-full bg-[#2563EB]/8 [animation-delay:1.4s]" />
+            </div>
 
-                {/* Data Source Selector */}
-                <div className="flex items-center gap-3">
+            {/* Hero header */}
+            <header className="relative px-6 pt-5 pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-baseline gap-3">
+                    <h1 className="text-2xl font-semibold leading-tight text-[#0f1020]">Rosetta</h1>
+                    <span className="hidden text-[10px] uppercase tracking-[0.28em] text-[#7a7d92] sm:inline">Hackathon 2026</span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-[#7a7d92]">A reasoning layer for structured data — schema-aware, execution-based, multi-agent, explainable.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <select
                     value={selectedDataSourceId || ''}
                     onChange={(e) => {
                       setSelectedDataSourceId(e.target.value || null);
                       setChatHistory([]);
                       setSchemaInfo(null);
+                      setWorkbookSchema(null);
+                      setSchemaLoadError(null);
                       setSuggestedQuestions([]);
-                      setCurrentConversationId(null); // Reset conversation
+                      setCurrentConversationId(null);
                     }}
-                    className="px-4 py-2 bg-[#252542] border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#8243EA]/50"
+                    className="min-w-[200px] rounded-lg border border-[#e3e5ee] bg-white px-3 py-1.5 text-sm text-[#0f1020] outline-none focus:border-[#8243EA]/50"
                   >
-                    <option value="">Select a data source...</option>
+                    <option value="">Select a workbook…</option>
                     {dataSources.map((ds) => (
-                      <option key={ds.id} value={ds.id}>
-                        {ds.name}
-                      </option>
+                      <option key={ds.id} value={ds.id}>{ds.name}</option>
                     ))}
                   </select>
 
-                  {/* New Conversation Button */}
-                  {currentConversationId && (
+                  {selectedDataSourceId && !workbookReady && (
+                    <button
+                      onClick={handleProcessDataSource}
+                      disabled={isProcessing}
+                      className="rounded-lg border border-[#8243EA]/40 bg-[#8243EA]/15 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5b21b6] hover:bg-[#8243EA]/25 disabled:opacity-50"
+                    >
+                      {isProcessing ? 'Preparing…' : 'Prepare'}
+                    </button>
+                  )}
+
+                  {selectedDataSourceId && workbookReady && (
+                    <button
+                      onClick={async () => {
+                        setIsSchemaOpen(true);
+                        if (!workbookSchema && !isSchemaLoading) {
+                          setIsSchemaLoading(true);
+                          setSchemaLoadError(null);
+                          try {
+                            const full = await withAuthRetry((token) =>
+                              getExcelSchema(token, selectedDataSourceId)
+                            );
+                            setWorkbookSchema(full);
+                          } catch (err) {
+                            setSchemaLoadError(
+                              err instanceof Error ? err.message : 'Failed to load schema'
+                            );
+                          } finally {
+                            setIsSchemaLoading(false);
+                          }
+                        }
+                      }}
+                      className="rounded-lg border border-[#e3e5ee] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5a5c70] hover:border-[#8243EA]/40 hover:text-[#5b21b6] transition"
+                      title="Inspect workbook schema and table relationships"
+                    >
+                      Schema
+                    </button>
+                  )}
+
+                  {chatHistory.length > 0 && (
                     <button
                       onClick={() => {
                         setChatHistory([]);
                         setCurrentConversationId(null);
                       }}
-                      className="px-3 py-2 bg-white/5 border border-white/10 text-white rounded-lg text-sm hover:bg-white/10 transition-colors"
-                      title="Start new conversation"
+                      className="rounded-lg border border-[#e3e5ee] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5a5c70] hover:border-[#8243EA]/40 hover:text-[#5b21b6] transition"
                     >
-                      New Chat
-                    </button>
-                  )}
-
-                  {selectedDataSourceId && !schemaInfo?.is_ready_for_queries && (
-                    <button
-                      onClick={handleProcessDataSource}
-                      disabled={isProcessing}
-                      className="px-4 py-2 bg-gradient-to-r from-[#8243EA] to-[#6366F1] text-white rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
-                    >
-                      {isProcessing ? 'Processing...' : 'Process File'}
+                      New session
                     </button>
                   )}
                 </div>
               </div>
+            </header>
 
-              {/* Error Message */}
-              {askError && (
-                <div className="mx-6 mt-4 p-3 bg-red-500/10 border border-red-400/40 rounded-lg text-sm text-red-200">
-                  {askError}
-                </div>
-              )}
+            {/* Metrics strip */}
+            <div className="relative border-y border-[#e3e5ee] bg-white/70 px-6 py-2 backdrop-blur">
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[#7a7d92]">
+                {selectedSource ? (
+                  <>
+                    <span className="font-semibold uppercase tracking-[0.18em] text-[#0f1020]">{selectedSource.name}</span>
+                    <span><span className="font-mono text-[#0f1020]">{selectedSource.sheet_count}</span> sheets</span>
+                    <span><span className="font-mono text-[#0f1020]">{schemaInfo?.queryable_questions_count ?? 0}</span> suggestions</span>
+                    <span className="ml-auto inline-flex items-center gap-1.5">
+                      <span className={`h-1.5 w-1.5 rounded-full ${workbookReady ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                      <span className={`uppercase tracking-[0.18em] font-semibold ${workbookReady ? 'text-emerald-600' : 'text-amber-600'}`}>{statusLabel}</span>
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-[#7a7d92]">No workbook selected</span>
+                )}
+              </div>
+            </div>
 
-              {/* Schema Info Banner */}
-              {schemaInfo && (
-                <div className="mx-6 mt-4 p-4 bg-[#252542] border border-white/10 rounded-xl">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-white font-semibold">
-                        {schemaInfo.workbook_purpose || 'Data Source Ready'}
-                      </p>
-                      <p className="text-gray-400 text-sm mt-1">
-                        Status: <span className={schemaInfo.is_ready_for_queries ? 'text-emerald-400' : 'text-yellow-400'}>
-                          {schemaInfo.processing_status}
-                        </span>
-                        {schemaInfo.is_ready_for_queries && (
-                          <span className="ml-3 text-gray-500">
-                            {schemaInfo.queryable_questions_count} suggested questions
-                          </span>
-                        )}
-                      </p>
-                    </div>
-                    {schemaInfo.is_ready_for_queries && (
-                      <div className="flex items-center gap-2 text-emerald-400">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                        <span className="text-sm font-semibold">Ready</span>
-                      </div>
+            {/* Error banner */}
+            {askError && (
+              <div className="mx-6 mt-3 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+                {askError}
+              </div>
+            )}
+
+            {/* Chat canvas */}
+            <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden">
+              <div className="flex-1 px-6 py-6 overflow-auto">
+                {!selectedDataSourceId ? (
+                  // Pre-workbook hero
+                  <div className="agentic-slide-up flex flex-col items-center justify-center py-16 text-center">
+                    <p className="text-[10px] uppercase tracking-[0.32em] text-[#5b21b6] font-semibold">Ready</p>
+                    <h2 className="mt-3 text-3xl font-semibold leading-tight text-[#0f1020]">
+                      Ask a question. <span className="text-[#7a7d92]">Get a defensible answer.</span>
+                    </h2>
+                    <p className="mt-3 max-w-lg text-sm text-[#5a5c70]">
+                      Every result comes paired with the executed code, the source rows, and a validator trace — inline.
+                    </p>
+                    {dataSources.length === 0 && (
+                      <button
+                        onClick={() => navigate('/dashboard/my-files')}
+                        className="mt-6 rounded-lg bg-[linear-gradient(135deg,#8243EA,#2563EB)] px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white shadow-[0_8px_20px_rgba(130,67,234,0.3)]"
+                      >
+                        Upload a workbook
+                      </button>
                     )}
                   </div>
-                </div>
-              )}
-
-              {/* Chat Area */}
-              <div className="flex-1 p-6 overflow-auto">
-                {!selectedDataSourceId ? (
-                  // No data source selected state
-                  <div className="h-full flex items-center justify-center">
-                    <div className="text-center">
-                      <div className="w-20 h-20 bg-[#252542] border border-white/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                        <svg className="w-10 h-10 text-[#8243EA]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                      </div>
-                      <h3 className="text-lg font-semibold text-white mb-2">Select a Data Source</h3>
-                      <p className="text-gray-400 text-sm mb-4">Choose an Excel file to start asking questions</p>
-                      {dataSources.length === 0 && (
-                        <button
-                          onClick={() => navigate('/dashboard/my-files')}
-                          className="px-6 py-2 bg-gradient-to-r from-[#8243EA] to-[#6366F1] text-white rounded-lg hover:opacity-90 transition-opacity"
-                        >
-                          Upload Files
-                        </button>
-                      )}
-                    </div>
-                  </div>
                 ) : chatHistory.length === 0 && suggestedQuestions.length > 0 ? (
-                  // Show suggested questions when no chat yet
-                  <div className="space-y-4">
-                    <p className="text-gray-400 text-sm font-semibold">Suggested Questions:</p>
+                  // Suggested questions
+                  <div className="agentic-slide-up mx-auto w-full max-w-4xl space-y-4">
+                    <p className="text-[10px] uppercase tracking-[0.28em] text-[#7a7d92] font-semibold">Suggested questions</p>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {suggestedQuestions.slice(0, 6).map((q, idx) => (
                         <button
                           key={idx}
                           onClick={() => handleAskQuestion(q)}
                           disabled={isAskingQuestion}
-                          className="p-4 bg-[#252542] border border-white/10 rounded-xl text-left text-gray-300 text-sm hover:border-[#8243EA]/50 hover:bg-[#252542]/80 transition-all"
+                          className="rounded-xl border border-[#e3e5ee] bg-white p-4 text-left text-sm text-[#0f1020] hover:border-[#8243EA]/40 hover:shadow-[0_8px_24px_rgba(130,67,234,0.08)] transition-all disabled:opacity-50"
                         >
                           {q}
                         </button>
@@ -590,68 +619,64 @@ export default function Dashboard() {
                     </div>
                   </div>
                 ) : chatHistory.length === 0 ? (
-                  // Empty state when no suggested questions
-                  <div className="h-full flex items-center justify-center">
-                    <div className="text-center">
-                      <div className="w-16 h-16 bg-[#252542] border border-white/10 rounded-xl flex items-center justify-center mx-auto mb-4">
-                        <svg className="w-8 h-8 text-[#8243EA]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
-                      </div>
-                      <h3 className="text-white font-semibold mb-2">Ask a Question</h3>
-                      <p className="text-gray-400 text-sm">Type your question below to analyze your data</p>
-                    </div>
+                  // Empty state
+                  <div className="agentic-slide-up flex flex-col items-center justify-center py-16 text-center">
+                    <p className="text-[10px] uppercase tracking-[0.32em] text-[#5b21b6] font-semibold">Ready</p>
+                    <h2 className="mt-3 text-2xl font-semibold leading-tight text-[#0f1020]">
+                      Ask a question below.
+                    </h2>
+                    <p className="mt-3 max-w-lg text-sm text-[#5a5c70]">
+                      Schema is loaded. Your workbook is queryable.
+                    </p>
                   </div>
                 ) : (
                   // Chat history
-                  <div className="space-y-4">
+                  <div className="mx-auto w-full max-w-4xl space-y-6">
                     {chatHistory.map((msg, idx) => (
                       <div
                         key={idx}
-                        className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                        className={`agentic-slide-up flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}
                       >
-                        <div
-                          className={`max-w-[80%] rounded-xl p-4 ${
-                            msg.type === 'user'
-                              ? 'bg-gradient-to-r from-[#8243EA] to-[#6366F1] text-white'
-                              : 'bg-[#252542] border border-white/10 text-gray-200'
-                          }`}
-                        >
-                          {msg.type === 'assistant' && msg.error ? (
-                            <p className="text-red-300">{msg.content}</p>
-                          ) : msg.type === 'assistant' ? (
-                            <AnswerMarkdown content={msg.content} />
-                          ) : (
-                            <pre className="whitespace-pre-wrap font-sans text-sm">{msg.content}</pre>
-                          )}
+                        {msg.type === 'user' ? (
+                          <div className="max-w-[88%] rounded-2xl rounded-br-md bg-[linear-gradient(135deg,#8243EA,#2563EB)] px-4 py-2.5 text-[15px] leading-6 text-white shadow-[0_8px_24px_rgba(130,67,234,0.18)]">
+                            {msg.content}
+                          </div>
+                        ) : (
+                          <div className="flex max-w-[88%] gap-3">
+                            <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[linear-gradient(135deg,#8243EA,#2563EB)] text-[10px] font-bold text-white shadow-[0_4px_14px_rgba(130,67,234,0.35)]">
+                              DI
+                            </span>
+                            <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md border border-[#e3e5ee] bg-white px-4 py-3 text-[15px] leading-6 text-[#0f1020] shadow-[0_4px_18px_rgba(15,16,32,0.04)]">
+                              {msg.error ? (
+                                <p className="text-red-600">{msg.content}</p>
+                              ) : (
+                                <AnswerMarkdown content={msg.content} />
+                              )}
 
-                          {/* Progressive formula breakdown — rendered when the
-                              coordinator's backward_trace produced a tree.
-                              Click any row to drill deeper. */}
-                          {msg.type === 'assistant' && !msg.error && msg.trace && (
-                            <FormulaBreakdown trace={msg.trace} />
-                          )}
+                              {!msg.error && msg.trace && (
+                                <FormulaBreakdown trace={msg.trace} />
+                              )}
 
-                          {/* Analytics chart — tornado (sensitivity) /
-                              convergence line (goal-seek) / bar (group /
-                              histogram / top-N) / time-series line. Renders
-                              only when the coordinator's last tool produced
-                              a chart_data payload. */}
-                          {msg.type === 'assistant' && !msg.error && msg.chartData && (
-                            <AnalyticsChart chart={msg.chartData} />
-                          )}
-
-                        </div>
+                              {!msg.error && msg.chartData && (
+                                <AnalyticsChart chart={msg.chartData} />
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
 
-                    {/* Loading indicator */}
                     {isAskingQuestion && (
-                      <div className="flex justify-start">
-                        <div className="bg-[#252542] border border-white/10 rounded-xl p-4">
-                          <div className="flex items-center gap-2">
-                            <div className="animate-spin h-4 w-4 border-2 border-[#8243EA] border-t-transparent rounded-full" />
-                            <span className="text-gray-400 text-sm">Analyzing...</span>
+                      <div className="agentic-slide-up flex justify-start">
+                        <div className="flex max-w-[88%] gap-3">
+                          <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[linear-gradient(135deg,#8243EA,#2563EB)] text-[10px] font-bold text-white shadow-[0_4px_14px_rgba(130,67,234,0.35)] cockpit-active-pulse">
+                            DI
+                          </span>
+                          <div className="rounded-2xl rounded-tl-md border border-[#e3e5ee] bg-white px-4 py-3 text-sm text-[#5a5c70]">
+                            <div className="flex items-center gap-2">
+                              <div className="animate-spin h-4 w-4 border-2 border-[#8243EA] border-t-transparent rounded-full" />
+                              <span>Reasoning…</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -660,63 +685,70 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* Chat Input at Bottom */}
-              <div className="p-4 border-t border-white/10">
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleAskQuestion();
+              {/* Composer */}
+              <div className="border-t border-[#e3e5ee] bg-white/85 px-6 py-3 backdrop-blur">
+                <div className="mx-auto w-full max-w-4xl">
+                  <div className="rounded-2xl border border-[#e3e5ee] bg-white shadow-[0_4px_18px_rgba(15,16,32,0.04)] focus-within:border-[#8243EA]/40 focus-within:shadow-[0_8px_28px_rgba(130,67,234,0.1)] transition">
+                    <textarea
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAskQuestion();
+                        }
+                      }}
+                      placeholder={
+                        !selectedDataSourceId
+                          ? 'Select a workbook first…'
+                          : !workbookReady
+                          ? 'Prepare the workbook first…'
+                          : 'Ask a question about your data…'
                       }
-                    }}
-                    placeholder={
-                      !selectedDataSourceId
-                        ? 'Select a data source first...'
-                        : !schemaInfo?.is_ready_for_queries
-                        ? 'Process the file first...'
-                        : 'Ask anything about your data...'
-                    }
-                    disabled={!selectedDataSourceId || !schemaInfo?.is_ready_for_queries || isAskingQuestion}
-                    className="w-full px-5 py-4 bg-[#252542] border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-[#8243EA]/50 transition-colors pr-14 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                  />
-                  <button
-                    onClick={() => handleAskQuestion()}
-                    disabled={!question.trim() || !selectedDataSourceId || !schemaInfo?.is_ready_for_queries || isAskingQuestion}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-gradient-to-r from-[#8243EA] to-[#6366F1] rounded-lg flex items-center justify-center hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                    </svg>
-                  </button>
+                      disabled={!selectedDataSourceId || !workbookReady || isAskingQuestion}
+                      rows={1}
+                      className="block w-full resize-none bg-transparent px-4 pt-3 text-[15px] leading-6 text-[#0f1020] outline-none placeholder:text-[#9a9caf] disabled:opacity-50"
+                    />
+                    <div className="flex items-center justify-end gap-2 px-3 pb-2.5 pt-1">
+                      <button
+                        onClick={() => handleAskQuestion()}
+                        disabled={!question.trim() || !selectedDataSourceId || !workbookReady || isAskingQuestion}
+                        className="rounded-md bg-[linear-gradient(135deg,#8243EA,#2563EB)] px-5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-white shadow-[0_8px_20px_rgba(130,67,234,0.3)] disabled:opacity-40"
+                      >
+                        {isAskingQuestion ? 'Reasoning…' : 'Send'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
+
+            {/* Schema Inspector Modal */}
+            <SchemaInspector
+              open={isSchemaOpen}
+              onClose={() => setIsSchemaOpen(false)}
+              schema={workbookSchema}
+              isLoading={isSchemaLoading}
+              error={schemaLoadError}
+            />
           </div>
         );
+      }
 
       case 'my-files':
         return (
           <div className="h-full m-4 flex flex-col gap-4">
-            <div className="bg-[#1a1a2e]/60 backdrop-blur-sm rounded-2xl h-full overflow-hidden flex flex-col border border-white/10">
+            <div className="bg-white border border-[#e3e5ee] rounded-2xl h-full overflow-hidden flex flex-col shadow-[0_4px_18px_rgba(15,16,32,0.04)]">
               {/* Header */}
-              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+              <div className="px-6 py-4 border-b border-[#e3e5ee] flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="grid grid-cols-2 gap-1">
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                  </div>
-                  <span className="text-[#A78BFA] font-semibold">My Files ({dataSourceTotal})</span>
+                  <span className="text-[10px] uppercase tracking-[0.28em] text-[#7a7d92] font-semibold">Sources</span>
+                  <span className="text-sm font-semibold text-[#0f1020]">Workbooks ({dataSourceTotal})</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={fetchDataSources}
-                    className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 text-white rounded-lg text-sm font-semibold hover:bg-white/10 transition-colors"
+                    className="rounded-lg border border-[#e3e5ee] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5a5c70] hover:border-[#8243EA]/40 hover:text-[#5b21b6] transition"
                   >
                     Refresh
                   </button>
@@ -726,18 +758,18 @@ export default function Dashboard() {
                       setUploadSuccess(null);
                       setIsCreateModalOpen(true);
                     }}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-[#8243EA] to-[#6366F1] text-white rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity"
+                    className="rounded-lg bg-[linear-gradient(135deg,#8243EA,#2563EB)] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-white shadow-[0_8px_20px_rgba(130,67,234,0.3)] hover:shadow-[0_8px_28px_rgba(130,67,234,0.42)] transition"
                   >
-                    Create Data Source
+                    Create source
                   </button>
                 </div>
               </div>
 
               {uploadError && (
-                <div className="mx-4 mt-4 p-3 bg-red-500/10 border border-red-400/40 rounded-lg text-sm text-red-200">{uploadError}</div>
+                <div className="mx-4 mt-4 p-3 bg-red-50 border border-red-300 rounded-lg text-sm text-red-700">{uploadError}</div>
               )}
               {uploadSuccess && (
-                <div className="mx-4 mt-4 p-3 bg-emerald-500/10 border border-emerald-400/40 rounded-lg text-sm text-emerald-200">{uploadSuccess}</div>
+                <div className="mx-4 mt-4 p-3 bg-emerald-50 border border-emerald-300 rounded-lg text-sm text-emerald-700">{uploadSuccess}</div>
               )}
 
               {isDataSourcesLoading ? (
@@ -747,28 +779,28 @@ export default function Dashboard() {
               ) : dataSources.length === 0 ? (
                 <div className="flex-1 flex items-center justify-center">
                   <div className="text-center">
-                    <div className="w-20 h-20 bg-[#252542] border border-white/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                      <svg className="w-10 h-10 text-[#8243EA]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div className="w-20 h-20 bg-[#f5f3fb] border border-[#e3e5ee] rounded-2xl flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-10 h-10 text-[#5b21b6]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                       </svg>
                     </div>
-                    <h3 className="text-lg font-semibold text-white mb-2">No files uploaded</h3>
-                    <p className="text-gray-400 text-sm">Upload your Excel files to create your first data source</p>
+                    <h3 className="text-lg font-semibold text-[#0f1020] mb-2">No workbooks yet</h3>
+                    <p className="text-[#7a7d92] text-sm">Upload your Excel files to create your first source</p>
                   </div>
                 </div>
               ) : (
                 <div className="flex-1 overflow-auto p-4">
-                  <div className="overflow-x-auto rounded-xl border border-white/10">
+                  <div className="overflow-x-auto rounded-xl border border-[#e3e5ee]">
                     <table className="w-full min-w-[860px] text-sm">
-                      <thead className="bg-[#252542] text-gray-300">
+                      <thead className="bg-[#f9f8fd] text-[#5a5c70]">
                         <tr>
-                          <th className="text-left px-4 py-3 font-semibold">Name</th>
-                          <th className="text-left px-4 py-3 font-semibold">File</th>
-                          <th className="text-left px-4 py-3 font-semibold">Size</th>
-                          <th className="text-left px-4 py-3 font-semibold">Tabs</th>
-                          <th className="text-left px-4 py-3 font-semibold">Sheet Names</th>
-                          <th className="text-left px-4 py-3 font-semibold">Created At</th>
-                          <th className="text-right px-4 py-3 font-semibold">Actions</th>
+                          <th className="text-left px-4 py-3 font-semibold uppercase tracking-[0.12em] text-[10px]">Name</th>
+                          <th className="text-left px-4 py-3 font-semibold uppercase tracking-[0.12em] text-[10px]">File</th>
+                          <th className="text-left px-4 py-3 font-semibold uppercase tracking-[0.12em] text-[10px]">Size</th>
+                          <th className="text-left px-4 py-3 font-semibold uppercase tracking-[0.12em] text-[10px]">Tabs</th>
+                          <th className="text-left px-4 py-3 font-semibold uppercase tracking-[0.12em] text-[10px]">Sheet names</th>
+                          <th className="text-left px-4 py-3 font-semibold uppercase tracking-[0.12em] text-[10px]">Created</th>
+                          <th className="text-right px-4 py-3 font-semibold uppercase tracking-[0.12em] text-[10px]">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -776,23 +808,23 @@ export default function Dashboard() {
                           <tr
                             key={source.id}
                             onClick={() => navigate(`/data-source/${source.id}`)}
-                            className="border-t border-white/10 bg-[#1a1a2e]/40 hover:bg-[#252542]/60 cursor-pointer transition-colors"
+                            className="border-t border-[#e3e5ee] bg-white hover:bg-[#f9f8fd] cursor-pointer transition-colors"
                           >
-                            <td className="px-4 py-3 text-white font-semibold">{source.name}</td>
-                            <td className="px-4 py-3 text-gray-300">{source.original_file_name}</td>
-                            <td className="px-4 py-3 text-gray-300">{formatFileSize(source.file_size_bytes)}</td>
-                            <td className="px-4 py-3 text-gray-300">{source.sheet_count}</td>
-                            <td className="px-4 py-3 text-gray-300 max-w-[320px] truncate" title={source.sheet_names.join(', ')}>
+                            <td className="px-4 py-3 text-[#0f1020] font-semibold">{source.name}</td>
+                            <td className="px-4 py-3 text-[#5a5c70]">{source.original_file_name}</td>
+                            <td className="px-4 py-3 text-[#5a5c70]">{formatFileSize(source.file_size_bytes)}</td>
+                            <td className="px-4 py-3 text-[#5a5c70]">{source.sheet_count}</td>
+                            <td className="px-4 py-3 text-[#5a5c70] max-w-[320px] truncate" title={source.sheet_names.join(', ')}>
                               {source.sheet_names.join(', ')}
                             </td>
-                            <td className="px-4 py-3 text-gray-400">{formatCreatedAt(source.created_at)}</td>
+                            <td className="px-4 py-3 text-[#7a7d92]">{formatCreatedAt(source.created_at)}</td>
                             <td className="px-4 py-3 text-right">
                               <button
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   handleDeleteDataSource(source);
                                 }}
-                                className="px-3 py-1.5 rounded-md bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200 text-xs font-semibold transition-colors"
+                                className="px-3 py-1.5 rounded-md bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 text-xs font-semibold uppercase tracking-[0.12em] transition-colors"
                                 title="Delete this data source"
                               >
                                 Delete
@@ -808,13 +840,18 @@ export default function Dashboard() {
             </div>
 
             {isCreateModalOpen && (
-              <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-                <div className="w-full max-w-2xl bg-[#1a1a2e] border border-white/10 rounded-2xl">
-                  <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
-                    <h3 className="text-white font-bold text-lg">Create Data Source</h3>
+              <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+                <div
+                  className="w-full max-w-2xl bg-[linear-gradient(180deg,#fdfcff,#f3f1fb)] border border-[#e3e5ee] rounded-2xl shadow-[0_40px_100px_rgba(0,0,0,0.25)]"
+                >
+                  <div className="px-6 py-4 border-b border-[#e3e5ee] flex items-center justify-between bg-white/85 rounded-t-2xl">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.28em] text-[#7a7d92] font-semibold">New source</p>
+                      <h3 className="text-[#0f1020] font-bold text-base">Create data source</h3>
+                    </div>
                     <button
                       onClick={() => setIsCreateModalOpen(false)}
-                      className="text-gray-400 hover:text-white transition-colors"
+                      className="rounded-lg border border-[#e3e5ee] bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-[#5a5c70] hover:border-[#8243EA]/40 hover:text-[#5b21b6] transition"
                     >
                       Close
                     </button>
@@ -822,40 +859,40 @@ export default function Dashboard() {
 
                   <div className="p-6 space-y-4">
                     <label className="block">
-                      <span className="text-xs uppercase tracking-wide text-gray-400 font-semibold">Data Source Name</span>
+                      <span className="text-[10px] uppercase tracking-[0.18em] text-[#7a7d92] font-semibold">Data source name</span>
                       <input
                         type="text"
                         value={dataSourceName}
                         onChange={(event) => setDataSourceName(event.target.value)}
                         placeholder="Quarterly Sales Workbook"
-                        className="mt-2 w-full px-4 py-3 bg-[#252542] border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-[#8243EA]/50"
+                        className="mt-2 w-full px-4 py-3 bg-white border border-[#e3e5ee] rounded-xl text-[#0f1020] placeholder-[#9a9caf] focus:outline-none focus:border-[#8243EA]/50"
                       />
                     </label>
 
                     <label className="block">
-                      <span className="text-xs uppercase tracking-wide text-gray-400 font-semibold">Excel File</span>
+                      <span className="text-[10px] uppercase tracking-[0.18em] text-[#7a7d92] font-semibold">Excel file</span>
                       <input
                         type="file"
                         accept=".xlsx,.xls,.xlsm"
                         onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
-                        className="mt-2 w-full px-4 py-2.5 bg-[#252542] border border-white/10 rounded-xl text-gray-300 file:mr-4 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-[#8243EA]/25 file:text-[#C4B5FD] file:font-semibold"
+                        className="mt-2 w-full px-4 py-2.5 bg-white border border-[#e3e5ee] rounded-xl text-[#5a5c70] file:mr-4 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-[#8243EA]/15 file:text-[#5b21b6] file:font-semibold file:uppercase file:tracking-[0.12em] file:text-[10px]"
                       />
-                      {selectedFileSummary && <p className="text-xs text-gray-400 mt-2">{selectedFileSummary}</p>}
+                      {selectedFileSummary && <p className="text-xs text-[#7a7d92] mt-2">{selectedFileSummary}</p>}
                     </label>
 
                     <div className="flex justify-end gap-3 pt-2">
                       <button
                         onClick={() => setIsCreateModalOpen(false)}
-                        className="px-4 py-2 rounded-lg border border-white/15 text-gray-300 hover:text-white hover:bg-white/5"
+                        className="rounded-lg border border-[#e3e5ee] bg-white px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5a5c70] hover:border-[#8243EA]/40 hover:text-[#5b21b6] transition"
                       >
                         Cancel
                       </button>
                       <button
                         onClick={handleUpload}
                         disabled={isUploadLoading}
-                        className="px-5 py-2 bg-gradient-to-r from-[#8243EA] to-[#6366F1] text-white rounded-lg font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="rounded-lg bg-[linear-gradient(135deg,#8243EA,#2563EB)] px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white shadow-[0_8px_20px_rgba(130,67,234,0.3)] hover:shadow-[0_8px_28px_rgba(130,67,234,0.42)] transition disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {isUploadLoading ? 'Uploading...' : 'Create'}
+                        {isUploadLoading ? 'Uploading…' : 'Create'}
                       </button>
                     </div>
                   </div>
@@ -870,44 +907,40 @@ export default function Dashboard() {
           <div className="h-full m-4 flex flex-col gap-4">
             {/* Usage Summary Card */}
             {usageSummary && (
-              <div className="bg-[#1a1a2e]/60 backdrop-blur-sm rounded-2xl border border-white/10 p-6">
-                <h3 className="text-[#A78BFA] font-semibold mb-4">Usage Summary (Last {usageSummary.period_days} Days)</h3>
+              <div className="bg-white border border-[#e3e5ee] rounded-2xl p-6 shadow-[0_4px_18px_rgba(15,16,32,0.04)]">
+                <p className="text-[10px] uppercase tracking-[0.28em] text-[#7a7d92] font-semibold">Usage</p>
+                <h3 className="text-[#0f1020] font-semibold mt-1 mb-4">Last {usageSummary.period_days} days</h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-[#252542] rounded-xl p-4">
-                    <p className="text-gray-400 text-xs uppercase tracking-wide">Total Calls</p>
-                    <p className="text-2xl font-bold text-white mt-1">{usageSummary.total_calls.toLocaleString()}</p>
+                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
+                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Total calls</p>
+                    <p className="text-2xl font-bold text-[#0f1020] mt-1">{usageSummary.total_calls.toLocaleString()}</p>
                   </div>
-                  <div className="bg-[#252542] rounded-xl p-4">
-                    <p className="text-gray-400 text-xs uppercase tracking-wide">Input Tokens</p>
-                    <p className="text-2xl font-bold text-white mt-1">{usageSummary.total_input_tokens.toLocaleString()}</p>
+                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
+                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Input tokens</p>
+                    <p className="text-2xl font-bold text-[#0f1020] mt-1">{usageSummary.total_input_tokens.toLocaleString()}</p>
                   </div>
-                  <div className="bg-[#252542] rounded-xl p-4">
-                    <p className="text-gray-400 text-xs uppercase tracking-wide">Output Tokens</p>
-                    <p className="text-2xl font-bold text-white mt-1">{usageSummary.total_output_tokens.toLocaleString()}</p>
+                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
+                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Output tokens</p>
+                    <p className="text-2xl font-bold text-[#0f1020] mt-1">{usageSummary.total_output_tokens.toLocaleString()}</p>
                   </div>
-                  <div className="bg-[#252542] rounded-xl p-4">
-                    <p className="text-gray-400 text-xs uppercase tracking-wide">Total Cost</p>
-                    <p className="text-2xl font-bold text-emerald-400 mt-1">${usageSummary.total_cost_usd.toFixed(4)}</p>
+                  <div className="bg-[#f9f8fd] border border-[#e3e5ee] rounded-xl p-4">
+                    <p className="text-[#7a7d92] text-[10px] uppercase tracking-[0.18em] font-semibold">Total cost</p>
+                    <p className="text-2xl font-bold text-emerald-600 mt-1">${usageSummary.total_cost_usd.toFixed(4)}</p>
                   </div>
                 </div>
               </div>
             )}
 
-            <div className="bg-[#1a1a2e]/60 backdrop-blur-sm rounded-2xl flex-1 overflow-hidden flex flex-col border border-white/10">
+            <div className="bg-white border border-[#e3e5ee] rounded-2xl flex-1 overflow-hidden flex flex-col shadow-[0_4px_18px_rgba(15,16,32,0.04)]">
               {/* Header */}
-              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+              <div className="px-6 py-4 border-b border-[#e3e5ee] flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="grid grid-cols-2 gap-1">
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                    <div className="w-2 h-2 border border-[#8243EA] rounded-sm" />
-                  </div>
-                  <span className="text-[#A78BFA] font-semibold">Conversation History ({conversationsTotal})</span>
+                  <span className="text-[10px] uppercase tracking-[0.28em] text-[#7a7d92] font-semibold">History</span>
+                  <span className="text-sm font-semibold text-[#0f1020]">Sessions ({conversationsTotal})</span>
                 </div>
                 <button
                   onClick={fetchConversations}
-                  className="px-4 py-2 bg-white/5 border border-white/10 text-white rounded-lg text-sm font-semibold hover:bg-white/10 transition-colors"
+                  className="rounded-lg border border-[#e3e5ee] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5a5c70] hover:border-[#8243EA]/40 hover:text-[#5b21b6] transition"
                 >
                   Refresh
                 </button>
@@ -920,18 +953,18 @@ export default function Dashboard() {
               ) : conversations.length === 0 ? (
                 <div className="flex-1 flex items-center justify-center">
                   <div className="text-center">
-                    <div className="w-20 h-20 bg-[#252542] border border-white/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                      <svg className="w-10 h-10 text-[#8243EA]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div className="w-20 h-20 bg-[#f5f3fb] border border-[#e3e5ee] rounded-2xl flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-10 h-10 text-[#5b21b6]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                       </svg>
                     </div>
-                    <h3 className="text-lg font-semibold text-white mb-2">No conversations yet</h3>
-                    <p className="text-gray-400 text-sm mb-6">Start a chat to see your history here</p>
+                    <h3 className="text-lg font-semibold text-[#0f1020] mb-2">No sessions yet</h3>
+                    <p className="text-[#7a7d92] text-sm mb-6">Start a chat to see your history here</p>
                     <button
                       onClick={() => navigate('/dashboard/ask-ai')}
-                      className="px-6 py-2 bg-gradient-to-r from-[#8243EA] to-[#6366F1] text-white rounded-lg hover:opacity-90 transition-opacity"
+                      className="rounded-lg bg-[linear-gradient(135deg,#8243EA,#2563EB)] px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white shadow-[0_8px_20px_rgba(130,67,234,0.3)] hover:shadow-[0_8px_28px_rgba(130,67,234,0.42)] transition"
                     >
-                      Start Chat
+                      Start session
                     </button>
                   </div>
                 </div>
@@ -943,15 +976,15 @@ export default function Dashboard() {
                       return (
                         <div
                           key={conv.id}
-                          className="bg-[#252542] border border-white/10 rounded-xl p-4 hover:border-[#8243EA]/50 transition-colors"
+                          className="bg-white border border-[#e3e5ee] rounded-xl p-4 hover:border-[#8243EA]/40 hover:shadow-[0_8px_24px_rgba(130,67,234,0.08)] transition-all"
                         >
                           <div className="flex items-start justify-between">
                             <div className="flex-1 min-w-0">
-                              <h4 className="text-white font-semibold truncate">{conv.title}</h4>
-                              <p className="text-gray-400 text-sm mt-1">
+                              <h4 className="text-[#0f1020] font-semibold truncate">{conv.title}</h4>
+                              <p className="text-[#5a5c70] text-sm mt-1">
                                 {dataSource?.name || 'Unknown data source'}
                               </p>
-                              <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                              <div className="flex items-center gap-4 mt-2 text-xs text-[#7a7d92]">
                                 <span>{conv.message_count} messages</span>
                                 <span>${conv.total_cost_usd.toFixed(4)}</span>
                                 <span>
@@ -964,13 +997,13 @@ export default function Dashboard() {
                             <div className="flex items-center gap-2 ml-4">
                               <button
                                 onClick={() => handleLoadConversation(conv.id)}
-                                className="px-3 py-1.5 bg-gradient-to-r from-[#8243EA] to-[#6366F1] text-white rounded-lg text-sm hover:opacity-90 transition-opacity"
+                                className="rounded-lg bg-[linear-gradient(135deg,#8243EA,#2563EB)] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-white shadow-[0_4px_14px_rgba(130,67,234,0.25)] hover:shadow-[0_4px_18px_rgba(130,67,234,0.4)] transition"
                               >
                                 Continue
                               </button>
                               <button
                                 onClick={() => handleDeleteConversation(conv.id)}
-                                className="px-3 py-1.5 bg-red-500/10 border border-red-400/30 text-red-300 rounded-lg text-sm hover:bg-red-500/20 transition-colors"
+                                className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-red-700 hover:bg-red-100 transition"
                               >
                                 Delete
                               </button>
@@ -991,8 +1024,19 @@ export default function Dashboard() {
     }
   };
 
+  const handleNewChat = () => {
+    // Reset the active chat so the user lands on a fresh Ask AI canvas.
+    setChatHistory([]);
+    setCurrentConversationId(null);
+    setAskError(null);
+    setQuestion('');
+    if (section !== 'ask-ai') {
+      navigate('/dashboard/ask-ai');
+    }
+  };
+
   return (
-    <Layout activeNavItem={section} onNavItemClick={handleNavClick}>
+    <Layout activeNavItem={section} onNavItemClick={handleNavClick} onNewChat={handleNewChat}>
       {renderContent()}
     </Layout>
   );

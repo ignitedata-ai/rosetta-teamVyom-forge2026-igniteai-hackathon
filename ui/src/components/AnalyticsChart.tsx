@@ -71,8 +71,8 @@ export default function AnalyticsChart({ chart }: { chart: ChartData | null | un
     const plotW = width - labelW - valueW - 12;
     const height = values.length * barH + 36;
     return (
-      <div className="mt-3 border border-slate-700 rounded-lg bg-slate-950/60 overflow-hidden">
-        <div className="px-3 py-2 border-b border-slate-700 text-xs text-slate-300 font-semibold">
+      <div className="mt-3 border border-[#e3e5ee] rounded-lg bg-[#f9f8fd] overflow-hidden">
+        <div className="px-3 py-2 border-b border-[#e3e5ee] text-[10px] uppercase tracking-[0.18em] text-[#7a7d92] font-semibold">
           {chart.y_label ?? 'value'} by {chart.x_label ?? 'group'}
         </div>
         <svg width={width} height={height} className="block">
@@ -81,11 +81,11 @@ export default function AnalyticsChart({ chart }: { chart: ChartData | null | un
             const w = (Math.abs(v) / maxV) * plotW;
             return (
               <g key={i}>
-                <text x={labelW - 8} y={y + 14} fontSize="11" fill="#cbd5e1" textAnchor="end" fontFamily="monospace">
+                <text x={labelW - 8} y={y + 14} fontSize="11" fill="#5a5c70" textAnchor="end" fontFamily="monospace">
                   {labels[i]?.length > 18 ? labels[i].slice(0, 17) + '…' : labels[i]}
                 </text>
-                <rect x={labelW} y={y} width={w} height={16} fill="#818cf8" opacity={0.85} />
-                <text x={labelW + w + 4} y={y + 13} fontSize="10" fill="#94a3b8">
+                <rect x={labelW} y={y} width={w} height={16} fill="#8243EA" opacity={0.85} />
+                <text x={labelW + w + 4} y={y + 13} fontSize="10" fill="#7a7d92">
                   {Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2)}
                 </text>
               </g>
