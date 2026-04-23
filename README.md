@@ -1,6 +1,6 @@
 <!-- Forge 2026 - IgniteAI Hackathon -->
 
-# Team Vyom
+# Team Vyom - Forge 2026 - IgniteAI Hackathon
 
 # Intelligent Excel Services
 
