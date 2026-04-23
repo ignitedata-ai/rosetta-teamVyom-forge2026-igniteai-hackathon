@@ -3,7 +3,10 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { exchangeGoogleCode } from '../api/auth';
 
-const REDIRECT_URI = 'http://localhost:3003/auth/google/callback';
+// Must match the redirect URI the Login page sent to Google. Deriving
+// from window.location.origin keeps the two in lock-step regardless of
+// which port Vite is running on.
+const REDIRECT_URI = `${window.location.origin}/auth/google/callback`;
 
 export default function GoogleCallback() {
   const [searchParams] = useSearchParams();

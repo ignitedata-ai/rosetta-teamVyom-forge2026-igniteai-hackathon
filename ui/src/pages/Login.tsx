@@ -3,7 +3,11 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getGoogleAuthUrl } from '../api/auth';
 
-const REDIRECT_URI = 'http://localhost:3003/auth/google/callback';
+// Derive the OAuth redirect URI from the current origin so the app always
+// sends Google the exact URL the browser is running on. Must match an
+// entry in the Google Cloud Console OAuth client's "Authorized redirect
+// URIs" whitelist (typically http://localhost:3000/auth/google/callback).
+const REDIRECT_URI = `${window.location.origin}/auth/google/callback`;
 
 export default function Login() {
   const { isAuthenticated } = useAuth();
