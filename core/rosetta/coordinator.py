@@ -97,6 +97,13 @@ MODE SELECTION (check first):
   asked how it's calculated.
 
 PLANNING GUIDANCE:
+- EFFICIENCY — prefer bulk tools over cell-at-a-time fetches. If you find
+  yourself about to call get_cell more than ~3 times on the same sheet to
+  enumerate categories, rows, or a column of labels, STOP and use
+  sql_query instead (call sql_schema first to learn table/column names).
+  get_cell is for specific refs you have already identified — not for
+  discovery or listing. Scanning a column row-by-row with get_cell wastes
+  the tool budget; one sql_query replaces 40+ get_cell calls.
 - Unfamiliar workbook? Start with get_workbook_summary to orient yourself.
 - "How is X calculated?" → find_cells(X) → backward_trace(that cell) →
   delegate_to_formula_explainer(trace).
