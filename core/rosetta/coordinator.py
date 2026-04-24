@@ -200,7 +200,7 @@ OTHER OUTPUT RULES (apply inside <DETAILED>):
 """
 
 
-MAX_TOOL_TURNS = 10
+MAX_TOOL_TURNS = 20
 MAX_AUDIT_RETRIES = 1  # total attempts = 1 + retries
 
 # Sentinel returned by `_run_tool_loop` when Claude never end-turns within
