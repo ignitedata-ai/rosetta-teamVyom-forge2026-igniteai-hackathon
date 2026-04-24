@@ -38,7 +38,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     ports:
-      - "5434:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -56,7 +56,7 @@ services:
     image: redis:7-alpine
     container_name: excel-redis
     ports:
-      - "6380:6379"
+      - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -73,8 +73,8 @@ services:
     image: qdrant/qdrant:v1.9.7
     container_name: excel-qdrant
     ports:
-      - "6335:6333"   # REST API
-      - "6336:6334"   # gRPC API
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC API
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__SERVICE__HTTP_PORT=6333

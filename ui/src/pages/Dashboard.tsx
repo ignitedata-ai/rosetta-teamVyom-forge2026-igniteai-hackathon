@@ -1064,11 +1064,16 @@ export default function Dashboard() {
   };
 
   const handleNewChat = () => {
-    // Reset the active chat so the user lands on a fresh Ask AI canvas.
     setChatHistory([]);
     setCurrentConversationId(null);
+    setSelectedConversation(null);
+    setSelectedDataSourceId(null);
+    setSchemaInfo(null);
     setAskError(null);
     setQuestion('');
+    setInflightQuestion('');
+    setFormulaModalIdx(null);
+    setReasoningModalIdx(null);
     if (section !== 'ask-ai') {
       navigate('/dashboard/ask-ai');
     }

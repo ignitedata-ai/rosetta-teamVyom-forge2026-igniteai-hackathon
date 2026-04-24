@@ -538,7 +538,7 @@ async def _run_tool_loop(
     trace_seen: Optional[dict] = None
     chart_seen: Optional[dict] = None
 
-    for _ in range(MAX_TOOL_TURNS):
+    for turn_idx in range(MAX_TOOL_TURNS):
         resp = await client.messages.create(
             model=model,
             max_tokens=2048,
@@ -569,6 +569,16 @@ async def _run_tool_loop(
                 elapsed_ms = int((time.time() - t0) * 1000)
                 state.log_tool_call(block.name, block.input, out, elapsed_ms)
                 tool_calls_made += 1
+                out_preview = json.dumps(out, default=str)[:200] if out is not None else "None"
+                log.info(
+                    "tool_call turn=%d idx=%d name=%s input=%s elapsed_ms=%d out_preview=%s",
+                    turn_idx + 1,
+                    tool_calls_made,
+                    block.name,
+                    json.dumps(block.input, default=str)[:300],
+                    elapsed_ms,
+                    out_preview,
+                )
                 if block.name == "backward_trace" and isinstance(out, dict) and "trace" in out:
                     if trace_seen is None:
                         trace_seen = out["trace"]
@@ -589,8 +599,20 @@ async def _run_tool_loop(
             continue
         # end_turn / max_tokens / stop_sequence
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        log.info(
+            "tool_loop_exit stop_reason=%s turns=%d tool_calls=%d text_preview=%s",
+            resp.stop_reason,
+            turn_idx + 1,
+            tool_calls_made,
+            text[:300],
+        )
         return text, tool_calls_made, trace_seen, chart_seen
 
+    log.warning(
+        "tool_loop_exit stop_reason=max_turns turns=%d tool_calls=%d",
+        MAX_TOOL_TURNS,
+        tool_calls_made,
+    )
     return MAX_TOOL_TURNS_SENTINEL, tool_calls_made, trace_seen, chart_seen
 
 
